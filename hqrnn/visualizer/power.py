@@ -10,7 +10,7 @@ from tqdm import tqdm
 from hqrnn.config.base import Config
 from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
-from hqrnn.3F_mode.types import UnifiedModeState
+from hqrnn.FFF_mode.types import UnifiedModeState
 from hqrnn.utils.seed import get_key
 
 # ------ 9-2. Model2 Visualizer
