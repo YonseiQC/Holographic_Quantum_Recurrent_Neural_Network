@@ -8,9 +8,9 @@ from tqdm import tqdm
 from hqrnn.config.base import Config
 from hqrnn.quantum.model import QuantumModel
 from hqrnn.scheduler.scheduler import Scheduler
-from hqrnn.3F_mode.controller import ModeController
+from hqrnn.FFF_mode.controller import ModeController
 from hqrnn.scheduler.loss_history import LossHistory
-from hqrnn.3F_mode.types import Mode
+from hqrnn.FFF_mode.types import Mode
 from hqrnn.utils.seed import get_key
 from hqrnn.utils.plotting import save_loss_plot
 

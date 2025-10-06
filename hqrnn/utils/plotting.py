@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from hqrnn.scheduler.loss_history import LossHistory
-from hqrnn.3F_mode.types import UnifiedModeState
+from hqrnn.FFF_mode.types import UnifiedModeState
 
 def save_loss_plot(plots_dir, config, loss_history: LossHistory, epoch: int, mode_state: UnifiedModeState):
     if not loss_history.epochs:

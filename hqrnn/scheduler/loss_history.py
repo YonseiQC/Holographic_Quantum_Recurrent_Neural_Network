@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
 from collections import defaultdict
-from hqrnn.3F_mode.types import Mode
+from hqrnn.FFF_mode.types import Mode
 
 # --- 4. Loss Tracker
 

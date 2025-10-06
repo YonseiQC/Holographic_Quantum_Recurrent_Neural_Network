@@ -2,7 +2,7 @@ from typing import Tuple
 import jax.numpy as jnp
 import optax
 from hqrnn.config.base import Config
-from hqrnn.3F_mode.types import UnifiedModeState, Mode
+from hqrnn.FFF_mode.types import UnifiedModeState, Mode
 
 # --- 3. Scheduler
 

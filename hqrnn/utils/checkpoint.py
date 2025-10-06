@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from hqrnn.config.base import Config, ExperimentConfig
-from hqrnn.3F_mode.types import Mode, UnifiedModeState
+from hqrnn.FFF_mode.types import Mode, UnifiedModeState
 from hqrnn.scheduler.loss_history import LossHistory
 
 
