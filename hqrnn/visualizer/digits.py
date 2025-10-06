@@ -9,7 +9,7 @@ from matplotlib.colors import ListedColormap
 from hqrnn.config.base import Config
 from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
-from hqrnn.3F_mode.types import UnifiedModeState
+from hqrnn.FFF_mode.types import UnifiedModeState
 
 # ------ 9-3. Model3 Visualizer
 
