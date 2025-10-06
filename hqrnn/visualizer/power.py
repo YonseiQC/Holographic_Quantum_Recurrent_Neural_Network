@@ -11,6 +11,7 @@ from hqrnn.config.base import Config
 from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
 from hqrnn.3F_mode.types import UnifiedModeState
+from hqrnn.utils.seed import get_key
 
 # ------ 9-2. Model2 Visualizer
 
@@ -42,7 +43,7 @@ class PowerVisualizer:
     def visualize_24hour_prediction(self, all_trained_params, data_handler, ckpt_manager: CheckpointManager):
         ds_cfg = self.config.dataset_cfg
         mdl_cfg = self.config.model_cfg
-        key = random.PRNGKey(42) 
+        key = get_key()
 
         target_date = pd.to_datetime(f"{ds_cfg.target_year}-{ds_cfg.target_month}-{ds_cfg.target_day}")
         df_target = data_handler.df[data_handler.df['Date'].dt.date == target_date.date()]
