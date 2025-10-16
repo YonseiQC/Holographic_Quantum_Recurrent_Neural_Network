@@ -2,7 +2,6 @@ import os
 import json
 import pickle
 from pathlib import Path
-from dataclasses import asdict
 from collections import deque, defaultdict
 from typing import Dict, Any, Optional
 
@@ -114,7 +113,7 @@ class CheckpointManager:
         rng_key: Any,
         loss_history: LossHistory = None,
     ):
-        mode_state_dict = asdict(mode_state)
+        mode_state_dict = mode_state
         mode_state_dict.pop('config', None)
         mode_state_dict['recent_losses'] = list(mode_state.recent_losses)  # Convert deques to lists
         mode_state_dict['fight_best_hits'] = list(mode_state.fight_best_hits)
