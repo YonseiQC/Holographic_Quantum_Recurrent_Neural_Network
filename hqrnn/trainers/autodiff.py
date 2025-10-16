@@ -258,7 +258,7 @@ class Trainer_Autodiff:
 
     def run(self):
         cfg = self.config
-        key = random.PRNGKey(42)
+        key = get_key()
         n_classes = 2 if cfg.model == 3 else 1  # Label embeddings for model 3
         params = self.q_model.initialize_params(key, n_classes=n_classes)
 
