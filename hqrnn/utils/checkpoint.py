@@ -130,7 +130,7 @@ class CheckpointManager:
             "config": self.config.to_dict(),
         }
         if loss_history is not None:
-            data["loss_history"] = asdict(loss_history)
+            data["loss_history"] = loss_history
 
         self._atomic_pickle_dump(path, data)
         print(f"Saved '{tag}' checkpoint at epoch {epoch} -> {path}")
