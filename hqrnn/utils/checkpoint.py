@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 from pathlib import Path
+from dataclasses import asdict
 from collections import deque, defaultdict
 from typing import Dict, Any, Optional
 
@@ -113,7 +114,11 @@ class CheckpointManager:
         rng_key: Any,
         loss_history: LossHistory = None,
     ):
-        mode_state_dict = mode_state
+        mode_state_dict = {
+            field.name: getattr(mode_state, field.name)
+            for field in mode_state.__dataclass_fields__.values()
+        }
+        mode_state_dict['mode'] = mode_state.mode.value
         mode_state_dict.pop('config', None)
         mode_state_dict['recent_losses'] = list(mode_state.recent_losses)  # Convert deques to lists
         mode_state_dict['fight_best_hits'] = list(mode_state.fight_best_hits)
@@ -129,7 +134,14 @@ class CheckpointManager:
             "config": self.config.to_dict(),
         }
         if loss_history is not None:
-            data["loss_history"] = loss_history
+            loss_history_dict = {
+                "losses": dict(loss_history.losses),
+                "epochs": loss_history.epochs,
+                "modes": loss_history.modes,
+                "learning_rates": loss_history.learning_rates,
+                "restarts": loss_history.restarts,
+            }
+            data["loss_history"] = loss_history_dict
 
         self._atomic_pickle_dump(path, data)
         print(f"Saved '{tag}' checkpoint at epoch {epoch} -> {path}")
