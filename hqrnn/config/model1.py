@@ -13,7 +13,6 @@ def set_model1_params(config):
     config.model_cfg = ModelConfig(depth=6, n_D=6, n_H=6, seq_len=6)
     config.dataset_cfg = DatasetConfig(
         total_days=200,
-        map_exponent=0,
         start_year=2024,
         start_month=1,
         start_day=5,
