@@ -24,7 +24,6 @@ class DatasetConfig:
     csv_path: str
     # (Model 1: S&P500)
     total_days: Optional[int] = None
-    map_exponent: Optional[int] = None  # Classify by grouping the 2**n_D normalized values into buckets of size 2**map_exponent
     # (Model 1: S&P500 & Model 2: Power)
     start_year: Optional[int] = None
     start_month: Optional[int] = None
