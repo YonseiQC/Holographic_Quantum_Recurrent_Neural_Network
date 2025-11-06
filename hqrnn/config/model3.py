@@ -41,7 +41,7 @@ def set_model3_params(config):
         find_mode_sub_start=0.3,
         find_mode_sub_end=0.2,
         find_fight_rate=5.0,
-        patience_num=200,
+        patience_num=500,
         cooldown_steps=10,
         stop_condition=10,
         ema_beta=0.95,
