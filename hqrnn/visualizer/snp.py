@@ -1,193 +1,144 @@
-from functools import partial
 import pandas as pd
 import jax
 import jax.numpy as jnp
-from jax import random, lax
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-
+import numpy as np
+from jax import random
 from hqrnn.config.base import Config
-from hqrnn.quantum.model import QuantumModel
-from hqrnn.utils.checkpoint import CheckpointManager
-from hqrnn.FFF_mode.types import UnifiedModeState
+from .timeseries_base import TimeSeriesDataHandler
 
-class SnpVisualizer:
-    def __init__(self, config: Config, q_model: QuantumModel):
-        self.config = config
-        self.q_model = q_model
-        self.data_handler = None
+# ------ 8-2. Model1 Data Handler
 
-    def set_data_handler(self, data_handler):
-        self.data_handler = data_handler
+class SnpDataHandler(TimeSeriesDataHandler):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.X_train, self.Y_train = None, None
+        self.X_test, self.Y_test = None, None
+        self.original_values = None
+        self.train_size = 0
+        self.dist_map = None
+        self.context_bins = None
+        self.context_assignments_train = None        
+        self._load_and_prep_data()
+        self._create_dist_map()
 
-    @partial(jax.jit, static_argnames=['self', 'learning_mode'])
-    def _predict_next(self, params, key, x_sequence, learning_mode='teacher_forcing'):
+    def _load_and_prep_data(self):
+        print("Loading and preparing S&P 500 data...")
+        df = pd.read_csv(self.config.dataset_cfg.csv_path)
+
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df.sort_values('Date').reset_index(drop=True)
+
+        ds_cfg = self.config.dataset_cfg
+        start_date_str = f"{ds_cfg.start_year}-{ds_cfg.start_month:02d}-{ds_cfg.start_day:02d}"
+        start_date = pd.to_datetime(start_date_str)
+
+        df = df[df['Date'] >= start_date].reset_index(drop=True)
+        print(f"Data filtered to start from: {start_date.date()}")
+
+        if ds_cfg.total_days is not None:
+            df = df.head(ds_cfg.total_days + self.config.model_cfg.seq_len + 1)
+            print(f"Data limited to total {len(df)} records for sequence generation.")
+
+        print(f"Data date range being used: {df['Date'].min()} to {df['Date'].max()}")
+
+        self.original_values = df['Open'].values  # Raw price series
+        rates = (self.original_values[1:] - self.original_values[:-1]) / self.original_values[:-1]  # Daily returns
+
+        seq_len = self.config.model_cfg.seq_len
+        X, Y = [], []
+        for i in range(len(rates) - seq_len):
+            x_seq_rates = rates[i: i + seq_len]  # Context window of returns
+            y_rate = rates[i + seq_len]  # Next-step return as label target
+
+            x_seq_bits = jax.vmap(self._normalize)(x_seq_rates)  # Vectorized rate -> bits
+            y_label = self._value_to_int(self._normalize(y_rate))  # Target class id
+
+            X.append(x_seq_bits)
+            Y.append(y_label)
+
+        X_full, Y_full = jnp.stack(X), jnp.array(Y)
+
+        self.train_size = int(len(X_full) * 0.8)  # 80/20 split
+        self.X_train, self.X_test = jnp.split(X_full, [self.train_size])
+        self.Y_train, self.Y_test = jnp.split(Y_full, [self.train_size])
+
+        print(f"Created {len(X_full)} total sequences.")
+        print(f"Data split into {len(self.X_train)} training and {len(self.X_test)} testing samples.")
+
+    def _create_dist_map(self):
         mdl_cfg = self.config.model_cfg
         n_D = mdl_cfg.n_D
-        powers = 2 ** jnp.arange(n_D - 1, -1, -1)
-        h_state = jnp.zeros(2**mdl_cfg.n_H, dtype=jnp.complex64).at[0].set(1.0)
+        K = 2 ** n_D
+        seq_len = mdl_cfg.seq_len
+        num_cases = K
+        group_size = 1
 
-        def _sample_from_probs(params, h_state, x_row, label_idx, key):
-            sample_key, _ = random.split(key)
-            probs = self.q_model.circuit_for_probs(params, h_state, x_row, label_idx)
-            probs_clipped = jnp.clip(probs, 0.0, 1.0)
-            probs_normalized = probs_clipped / (jnp.sum(probs_clipped) + 1e-9)
-            measured_int = random.categorical(sample_key, jnp.log(probs_normalized))
-            sample_bits = (jnp.floor_divide(measured_int, powers) % 2).astype(jnp.int32)
-            return sample_bits, measured_int
+        all_bits = jnp.array([[(i >> (n_D - 1 - j)) & 1 for j in range(n_D)] for i in range(K)])  # Lookup table bits
+        rate_lookup_table = self._denormalize(all_bits)  # Rate per class
 
-        if learning_mode == 'teacher_forcing':
-            def body_fun(t, carry):
-                h_state, key = carry
-                key, subkey = random.split(key)
-                x_t = x_sequence[t].astype(jnp.float32)
-                sample_bits, measured_int = _sample_from_probs(params, h_state, x_t, 0, subkey)
-                full_state = self.q_model.circuit_for_state(params, h_state, x_t, 0)
-                psi_matrix = jnp.reshape(full_state, (2**mdl_cfg.n_H, 2**mdl_cfg.n_D))
-                h_unnormalized = psi_matrix[:, measured_int]
-                h_norm = jnp.linalg.norm(h_unnormalized)
-                h_next = jnp.where(h_norm > 1e-9, h_unnormalized / h_norm, h_state)
-                return (h_next, subkey)
+        initial_boundaries = [rate_lookup_table[i * group_size] for i in range(num_cases)]
+        initial_boundaries.append(rate_lookup_table[-1] + (rate_lookup_table[-1] - rate_lookup_table[-2]))
+        initial_boundaries = jnp.array(initial_boundaries)
 
-            h_state, key = lax.fori_loop(0, mdl_cfg.seq_len, body_fun, (h_state, key))
-            last_input = x_sequence[-1].astype(jnp.float32)
-            final_sample_bits, _ = _sample_from_probs(params, h_state, last_input, 0, key)
+        min_rate_repre = initial_boundaries[0]
+        max_rate_repre = initial_boundaries[-1]
 
-        else:
-            def ar_body_fun(t, carry):
-                h_state, prev_output, key = carry
-                key, subkey = random.split(key)
-                x_t = lax.cond(
-                    t == 0,
-                    lambda: x_sequence[0].astype(jnp.float32),
-                    lambda: prev_output
-                )
-                sample_bits, measured_int = _sample_from_probs(params, h_state, x_t, 0, subkey)
-                full_state = self.q_model.circuit_for_state(params, h_state, x_t, 0)
-                psi_matrix = jnp.reshape(full_state, (2**mdl_cfg.n_H, 2**mdl_cfg.n_D))
-                h_unnormalized = psi_matrix[:, measured_int]
-                h_norm = jnp.linalg.norm(h_unnormalized)
-                h_next = jnp.where(h_norm > 1e-9, h_unnormalized / h_norm, h_state)
-                return (h_next, sample_bits.astype(jnp.float32), subkey)
-
-            h_state, last_output, key = lax.fori_loop(
-                0, mdl_cfg.seq_len, ar_body_fun, 
-                (h_state, jnp.zeros(n_D, dtype=jnp.float32), key)
-            )
-            final_sample_bits, _ = _sample_from_probs(params, h_state, last_output, 0, key)
-
-        return final_sample_bits
-
-    def visualize_samples(self, params, key, epoch, ckpt_manager: CheckpointManager, mode_state: UnifiedModeState,
-                          save_to_disk=True, tag=""):
-        if self.data_handler is None:
-            print("Error: Data handler not set in Visualizer.")
-            return None, None
-
-        print("Generating predictions...")
-        mdl_cfg = self.config.model_cfg
-        X_full = jnp.concatenate([self.data_handler.X_train, self.data_handler.X_test], axis=0)
-        num_predictions = len(X_full)
-        key, pred_key = random.split(key, 2)
-
-        learning_mode = self.config.exp_cfg.learning_mode
-
-        print(f"Predicting rates...")
-        pred_keys = random.split(pred_key, num_predictions)
-        pred_bits_list = []
-        for i in tqdm(range(num_predictions), desc="Prediction"):
-            bits_i = self._predict_next(params, pred_keys[i], X_full[i], learning_mode)
-            pred_bits_list.append(bits_i)
-        all_pred_bits = jnp.stack(pred_bits_list, axis=0)
-
-        all_pred_bits_reshaped = all_pred_bits.reshape(num_predictions, 1, -1)
-        pred_predicted_rates = jax.vmap(self.data_handler._denormalize)(all_pred_bits_reshaped).flatten()
-        pred_predicted_rates = [float(r) for r in pred_predicted_rates]
-
-        start_idx = mdl_cfg.seq_len
-        start_value = self.data_handler.original_values[start_idx]
-        actual_values = self.data_handler.original_values[start_idx: start_idx + num_predictions + 1]
-
-        pred_pred_values = [start_value]
-        for rate in pred_predicted_rates:
-            pred_pred_values.append(pred_pred_values[-1] * (1 + rate))
-
-        actual_values_full = list(self.data_handler.original_values[start_idx - mdl_cfg.seq_len: start_idx]) + list(actual_values)
-        pred_values_full = list(self.data_handler.original_values[start_idx - mdl_cfg.seq_len: start_idx]) + pred_pred_values
-
-        actual_seq_directions = []
-        pred_seq_directions = []
-        for i in range(1, num_predictions + 1):
-            actual_start = actual_values_full[i]
-            actual_end = actual_values_full[i + mdl_cfg.seq_len]
-            actual_change = actual_end - actual_start
-            actual_seq_directions.append(1 if actual_change > 0 else 0)
-
-            pred_start = pred_values_full[i]
-            pred_end = pred_values_full[i + mdl_cfg.seq_len]
-            pred_change = pred_end - pred_start
-            pred_seq_directions.append(1 if pred_change > 0 else 0)
-
-        direction_accuracy = sum([1 for a, p in zip(actual_seq_directions, pred_seq_directions) if a == p]) / len(actual_seq_directions) * 100
-
-        actual_daily_rates = [(actual_values[i+1] - actual_values[i]) / actual_values[i] for i in range(num_predictions)]
-        mape = sum([abs(p - a) for a, p in zip(actual_daily_rates, pred_predicted_rates)]) / num_predictions * 100
-
-        if save_to_disk:
-            days = range(num_predictions + 1)
-            train_days = self.data_handler.train_size
-
-            fig, axs = plt.subplots(3, 1, figsize=(16, 14))
-            fig.suptitle(f'S&P 500 Prediction Analysis - Epoch {epoch}', fontsize=16)
-
-            ax1 = axs[0]
-            ax1.plot(days, actual_values, color='gray', linewidth=2.5, label='Actual')
-            ax1.plot(days, pred_pred_values, color='firebrick', linewidth=2, linestyle='-', label='Prediction')
-            ax1.axvline(x=train_days, color='r', linestyle=':', linewidth=2, label='Train/Test Split')
-            ax1.set_xlabel('Day')
-            ax1.set_ylabel('Open Value')
-            ax1.set_title('Actual vs Predicted Price')
-            ax1.legend()
-            ax1.grid(True, alpha=0.5)
-
-            ax2 = axs[1]
-            mape_series = [abs(p - a) / abs(a + 1e-9) * 100 for a, p in zip(actual_daily_rates, pred_predicted_rates)]
-            ax2.plot(range(len(mape_series)), mape_series, color='orange', linewidth=2, label='MAPE (%)')
-            ax2.axhline(y=mape, color='red', linestyle='--', linewidth=2, label=f'Average MAPE: {mape:.2f}%')
-            ax2.axvline(x=train_days, color='r', linestyle=':', linewidth=2)
-            ax2.set_xlabel('Day')
-            ax2.set_ylabel('MAPE (%)')
-            ax2.set_title('Mean Absolute Percentage Error Over Time')
-            ax2.legend()
-            ax2.grid(True, alpha=0.5)
-
-            ax3 = axs[2]
-            correct_so_far = [sum([1 for j in range(i+1) if actual_seq_directions[j] == pred_seq_directions[j]]) for i in range(len(actual_seq_directions))]
-            cumulative_acc = [(c / (i+1)) * 100 for i, c in enumerate(correct_so_far)]
-            ax3.plot(range(len(cumulative_acc)), cumulative_acc, color='green', linewidth=2, label='Cumulative Direction Accuracy')
-            ax3.axhline(y=direction_accuracy, color='darkgreen', linestyle='--', linewidth=2, label=f'Final Accuracy: {direction_accuracy:.1f}%')
-            ax3.axvline(x=train_days, color='r', linestyle=':', linewidth=2)
-            ax3.set_xlabel('Day')
-            ax3.set_ylabel('Direction Accuracy (%)')
-            ax3.set_title('Direction Prediction Accuracy (Cumulative)')
-            ax3.legend()
-            ax3.grid(True, alpha=0.5)
-
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
-            
-            img_path = ckpt_manager.plots_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.png"
-            plt.savefig(img_path, dpi=150)
-            plt.close(fig)
-            print(f"Prediction plot saved to {img_path}")
-            print(f"Direction Accuracy: {direction_accuracy:.1f}%, MAPE: {mape:.2f}%")
-
-            results_df = pd.DataFrame({
-                'Day': range(num_predictions + 1),
-                'Actual_Value': actual_values,
-                'Predicted_Value': pred_pred_values,
-            })
-            csv_path = ckpt_manager.csv_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.csv"
-            results_df.to_csv(csv_path, index=False)
-            print(f"Prediction comparison CSV saved to {csv_path}")
+        train_indices = jnp.arange(self.train_size)
+        start_values = self.original_values[train_indices]
+        end_values = self.original_values[train_indices + seq_len]
         
-        return direction_accuracy, mape
+        train_contexts = (end_values / start_values) - 1.0  
+        clipped_contexts = jnp.clip(train_contexts, min_rate_repre, max_rate_repre - 1e-9) 
+
+        initial_assignments = jnp.digitize(clipped_contexts, initial_boundaries) - 1
+        initial_assignments = jnp.clip(initial_assignments, 0, num_cases - 1)
+
+        case_counts = np.bincount(initial_assignments, minlength=num_cases)
+        final_boundaries = list(initial_boundaries)
+
+        for i in range(num_cases - 1, -1, -1):
+            if case_counts[i] == 0:
+                if i == num_cases - 1:
+                    final_boundaries.pop(-2)  # Merge with left neighbor
+                elif i == 0:
+                    final_boundaries.pop(1)  # Merge with right neighbor
+                else:
+                    lower_b = final_boundaries[i]
+                    upper_b = final_boundaries[i + 1]
+                    mid_point = (lower_b + upper_b) / 2.0  # Re-center boundary
+                    final_boundaries.pop(i + 1)
+                    final_boundaries[i] = mid_point
+
+        self.context_bins = jnp.array(final_boundaries)  # Finalized bin edges
+        final_assignments = jnp.digitize(clipped_contexts, self.context_bins) - 1
+        final_assignments = jnp.clip(final_assignments, 0, len(self.context_bins) - 2)
+    
+        self.context_assignments_train = final_assignments
+        num_final_cases = len(self.context_bins) - 1
+        dist_map = {i: jnp.zeros(K, dtype=jnp.float32) for i in range(num_final_cases)}  # P(y | bin=i) counts
+        final_case_counts = {i: 0 for i in range(num_final_cases)}
+
+        for cid, label in zip(final_assignments, self.Y_train):
+            cid = int(cid)
+            dist_map[cid] = dist_map[cid].at[label].add(1)
+            final_case_counts[cid] += 1
+
+        for i in range(num_final_cases):
+            if final_case_counts[i] > 0:
+                dist_map[i] /= final_case_counts[i]
+            else:
+                dist_map[i] = jnp.full(K, 1.0 / K)
+
+        self.dist_map = jnp.stack([dist_map[i] for i in range(num_final_cases)])
+
+    def create_batch(self, key, batch_size):
+        num_samples = self.X_train.shape[0]
+        indices = random.choice(key, num_samples, (min(batch_size, num_samples),), replace=False)
+        X_batch = self.X_train[indices]
+        Y_batch = self.Y_train[indices]
+        C_batch = self.context_assignments_train[indices]
+        Y_expanded = jnp.zeros((len(indices), self.config.model_cfg.seq_len), dtype=jnp.int32)
+        Y_expanded = Y_expanded.at[:, -1].set(Y_batch)  # Place label at final step
+        L_batch = jnp.zeros(len(indices), dtype=jnp.int32)
+        return X_batch, Y_expanded, L_batch, C_batch
