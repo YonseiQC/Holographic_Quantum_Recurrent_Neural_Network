@@ -35,22 +35,19 @@ class Trainer_SPSA:
         pow2 = 2 ** jnp.arange(n_D - 1, -1, -1)
         return jnp.sum(bits * pow2, axis=-1).astype(jnp.int32)
 
-
-    # ------ Forward pass with hard samples
-
     def _forward_sequence_hard_samples(self, params, X_seq, Y_seq, L, key, learning_mode):
         mdl = self.config.model_cfg
         h0 = jnp.zeros(2 ** mdl.n_H, dtype=jnp.complex64).at[0].set(1.0)
 
         def step_with_input(h, x_row, label_idx, key):
-            probs = self.q_model.circuit_for_probs(params, h, x_row, label_idx, True)
+            probs = self.q_model.circuit_for_probs(params, h, x_row, label_idx)
             probs_clipped = jnp.clip(probs, 0.0, 1.0)
             probs_normalized = probs_clipped / (jnp.sum(probs_clipped) + 1e-9)
 
             d_idx = random.categorical(key, jnp.log(probs_normalized)).astype(jnp.int32)
             d_bits = (jnp.floor_divide(d_idx, 2 ** jnp.arange(mdl.n_D - 1, -1, -1)) % 2).astype(jnp.int32)
 
-            full_state = self.q_model.circuit_for_state(params, h, x_row, label_idx, True)
+            full_state = self.q_model.circuit_for_state(params, h, x_row, label_idx)
             psi_matrix = jnp.reshape(full_state, (2 ** mdl.n_H, 2 ** mdl.n_D))
             h_unnorm = psi_matrix[:, d_idx]
             h_norm = jnp.linalg.norm(h_unnorm)
@@ -86,10 +83,7 @@ class Trainer_SPSA:
 
         return onehots
 
-
-    # ------ MMD objective
-
-    def mmd_value_only(self, params, X, Y, L, key, learning_mode):
+    def mmd_value_only(self, params, X, Y, L, C, key, learning_mode):
         mdl_cfg, loss_cfg = self.config.model_cfg, self.loss_cfg
         B, T, D = X.shape[0], mdl_cfg.seq_len, mdl_cfg.n_D
         keys = random.split(key, B)
@@ -105,26 +99,18 @@ class Trainer_SPSA:
             dist2 = jnp.sum(diff * diff, axis=-1)
             return jnp.exp(-gamma * dist2)
 
-
         if self.config.model == 1:
             sigma = loss_cfg.mmd_sigma
             gamma = 1.0 / (2 * sigma**2)
 
-            v_bits_to_int = jax.vmap(self._bits_to_int)
-            start_vals = v_bits_to_int(X[:, 0, :])
-            end_vals = v_bits_to_int(X[:, -1, :])
-            context_values = end_vals - start_vals
-            context_ids = jnp.digitize(context_values, self.context_bins) - 1
-            context_ids = jnp.clip(context_ids, 0, len(self.context_bins) - 2)
-
+            context_ids_batch = C
             P = model_onehots_seq[:, -1, :]
-            Q = self.dist_map[context_ids]
+            Q = self.dist_map[context_ids_batch]
 
             Kpp = _rbf(P, P, gamma).mean()
             Kqq = _rbf(Q, Q, gamma).mean()
             Kpq = _rbf(P, Q, gamma).mean()
             return jnp.maximum(0.0, Kpp - 2.0 * Kpq + Kqq)
-            
 
         if self.config.model == 2:
             sigma = jnp.asarray(loss_cfg.mmd_sigma, dtype=jnp.float32)
@@ -138,7 +124,6 @@ class Trainer_SPSA:
             Kpq = _rbf(P_bits_last, Q_bits_last, gamma).mean()
             return Kpp - 2.0 * Kpq + Kqq
 
-
         sigma = jnp.asarray(loss_cfg.mmd_sigma, dtype=jnp.float32)
         gamma = 1.0 / (2.0 * sigma**2)
         lambda_dist = jnp.asarray(loss_cfg.mmd_lambda, dtype=jnp.float32)
@@ -149,21 +134,17 @@ class Trainer_SPSA:
         def _mmd_masked(P, Q, mP, mQ):
             nP = jnp.sum(mP)
             nQ = jnp.sum(mQ)
-            if nP == 0 or nQ == 0:
-                return 0.0
-
             KP = _rbf(P, P, gamma)
             KQ = _rbf(Q, Q, gamma)
             KPQ = _rbf(P, Q, gamma)
-
             Mpp = mP[:, None] * mP[None, :]
             Mqq = mQ[:, None] * mQ[None, :]
             Mpq = mP[:, None] * mQ[None, :]
-
             term_pp = jnp.sum(KP * Mpp) / jnp.maximum(nP**2, 1e-9)
             term_qq = jnp.sum(KQ * Mqq) / jnp.maximum(nQ**2, 1e-9)
             term_pq = jnp.sum(KPQ * Mpq) / jnp.maximum(nP * nQ, 1e-9)
-            return term_pp - 2.0 * term_pq + term_qq
+            ok = (nP > 0) & (nQ > 0)
+            return jnp.where(ok, term_pp - 2.0 * term_pq + term_qq, 0.0)
 
         m0 = (L == 0).astype(jnp.float32)
         m1 = (L == 1).astype(jnp.float32)
@@ -181,23 +162,20 @@ class Trainer_SPSA:
         k = jnp.asarray(loss_cfg.mmd_k, dtype=jnp.float32)
         return jax.nn.logsumexp(k * jnp.stack([L0, L1])) / k
 
-
-    # ------ SPSA helpers
-
     def _sample_rademacher_like(self, key, pytree):
         leaves, treedef = jtu.tree_flatten(pytree)
         ks = random.split(key, len(leaves))
         deltas = [jnp.sign(random.normal(k, p.shape)).astype(p.dtype) for p, k in zip(leaves, ks)]
         return jtu.tree_unflatten(treedef, deltas)
 
-    def spsa_step(self, params, opt_state, X, Y, L, key, lr, c):
+    def spsa_step(self, params, opt_state, X, Y, L, C, key, lr, c):
         key_d, key1, key2 = random.split(key, 3)
         delta = self._sample_rademacher_like(key_d, params)
         params_plus = jtu.tree_map(lambda p, d: p + c * d, params, delta)
         params_minus = jtu.tree_map(lambda p, d: p - c * d, params, delta)
 
-        loss_plus = self.mmd_value_only(params_plus, X, Y, L, key1, self.exp_cfg.learning_mode)
-        loss_minus = self.mmd_value_only(params_minus, X, Y, L, key2, self.exp_cfg.learning_mode)
+        loss_plus = self.mmd_value_only(params_plus, X, Y, L, C, key1, self.exp_cfg.learning_mode)
+        loss_minus = self.mmd_value_only(params_minus, X, Y, L, C, key2, self.exp_cfg.learning_mode)
 
         scale = (loss_plus - loss_minus) / (2.0 * c + 1e-12)
         grads = jtu.tree_map(lambda d: scale * d, delta)
@@ -208,9 +186,6 @@ class Trainer_SPSA:
 
         loss_avg = 0.5 * (loss_plus + loss_minus)
         return params, opt_state, float(loss_avg)
-
-
-    # ------ Training loop
 
     def run(self):
         cfg = self.config
@@ -238,64 +213,93 @@ class Trainer_SPSA:
         pbar = tqdm(range(start_epoch, cfg.training_cfg.max_epochs), desc="Training (SPSA)")
         for epoch in pbar:
             key, batch_key, step_key = random.split(key, 3)
-            Xb, Yb, Lb = self.data_handler.create_batch(batch_key, cfg.training_cfg.batch_size)
+            
+            Xb, Yb, Lb, Cb = self.data_handler.create_batch(batch_key, cfg.training_cfg.batch_size)
+            
             if Xb is None:
                 continue
 
             base_lr, _ = scheduler.get_lr(epoch, mode_controller.state)
+
             if cfg.scheduler_toggle_cfg.use_complex_scheduler:
                 current_lr = max(base_lr * mode_controller.get_lr_multiplier(), cfg.training_cfg.learning_rate_min)
             else:
                 current_lr = base_lr
 
             params, opt_state, loss_val = self.spsa_step(
-                params, opt_state, Xb, Yb, Lb, step_key, current_lr, spsa_c
+                params, opt_state, Xb, Yb, Lb, Cb, step_key, current_lr, spsa_c
             )
 
-            loss_dict = {'total': loss_val}
+            loss_dict = {}
             if cfg.model == 3:
                 loss_dict['first_digit_loss'] = loss_val
                 loss_dict['second_digit_loss'] = loss_val
 
+            loss_dict['total'] = loss_val
+
+            loss_history.add(epoch, loss_dict, mode_controller.state.mode, current_lr)
+
             if cfg.scheduler_toggle_cfg.use_complex_scheduler:
                 was_fight_mode = mode_controller.state.mode == Mode.FIGHT
                 res = mode_controller.update(loss_val, base_lr, epoch)
+                is_fight_mode = mode_controller.state.mode == Mode.FIGHT
+
                 if res.should_save_best:
-                    self.ckpt_manager.save_checkpoint("best", epoch, params, opt_state, mode_controller.state, key, loss_history)
-                if was_fight_mode and not (mode_controller.state.mode == Mode.FIGHT):
+                    self.ckpt_manager.save_best(
+                        epoch, loss_val, params, opt_state, mode_controller.state, key, loss_history
+                    )
+
+                if was_fight_mode and not is_fight_mode:
                     print(f"\n--- Fight mode ended at epoch {epoch}. Generating analysis plots... ---")
                     key, plot_key = random.split(key)
+                    
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
+
                     self.visualizer.visualize_samples(
-                        params, plot_key, epoch, self.ckpt_manager, mode_controller.state,
-                        save_to_disk=True, tag=f"fight_end_epoch_{epoch}"
+                        params, plot_key, epoch, self.ckpt_manager,
+                        mode_controller.state, save_to_disk=True, tag=f"fight_end_epoch_{epoch}"
                     )
+
                 if mode_controller.state.mode == Mode.FLEE:
                     key, noise_key = random.split(key)
                     params = self._add_noise(params, noise_key, cfg.mode_cfg.flee_noise_sigma)
+
             else:
                 if loss_val < mode_controller.state.best_loss:
                     mode_controller.state.best_loss = loss_val
-                    self.ckpt_manager.save_checkpoint("best", epoch, params, opt_state, mode_controller.state, key, loss_history)
-                if (epoch + 1) % cfg.training_cfg.plot_every_n_epochs == 0 and epoch > 0:
-                    key, plot_key = random.split(key)
-                    save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch + 1, mode_controller.state)
-                    self.visualizer.visualize_samples(
-                        params, plot_key, epoch + 1, self.ckpt_manager, mode_controller.state,
-                        save_to_disk=True, tag=f"periodic_epoch_{epoch + 1}"
+
+                    self.ckpt_manager.save_best(
+                        epoch, loss_val, params, opt_state, mode_controller.state, key, loss_history
                     )
 
-            loss_history.add(epoch, loss_dict, mode_controller.state.mode, current_lr)
+                if (epoch + 1) % cfg.training_cfg.plot_every_n_epochs == 0 and epoch > 0:
+                    print(f"\n--- Periodic plot at epoch {epoch + 1}. Generating analysis plots... ---")
+                    key, plot_key = random.split(key)
+                    
+                    save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch + 1, mode_controller.state)
+                    
+                    self.visualizer.visualize_samples(
+                        params, plot_key, epoch + 1, self.ckpt_manager,
+                        mode_controller.state, save_to_disk=True, tag=f"periodic_epoch_{epoch + 1}"
+                    )
+
             postfix = {"Loss": f"{loss_val:.4f}", "LR": f"{current_lr:.6f}", "Best": f"{mode_controller.state.best_loss:.4f}"}
             if cfg.scheduler_toggle_cfg.use_complex_scheduler:
                 postfix["Mode"] = mode_controller.state.mode.value.capitalize()[:6]
             pbar.set_postfix(postfix)
 
         print("\nTraining completed.")
+        print(f"Saving final 'last' checkpoint at epoch {epoch}...")
+        self.ckpt_manager.save_last(
+            epoch, 
+            params, 
+            opt_state, 
+            mode_controller.state, 
+            key, 
+            loss_history
+        )
+
         return params, mode_controller.state, loss_history
-
-
-    # ------ Noise adder
 
     def _add_noise(self, params, key, sigma):
         leaves, treedef = jtu.tree_flatten(params)
