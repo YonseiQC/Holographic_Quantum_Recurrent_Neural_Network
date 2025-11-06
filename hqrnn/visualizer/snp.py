@@ -1,3 +1,4 @@
+# hqrnn/visualizer/snp.py
 from functools import partial
 import pandas as pd
 import jax
@@ -11,8 +12,6 @@ from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
 from hqrnn.FFF_mode.types import UnifiedModeState
 
-# ------ 9-1. Model1 Visualizer
-
 class SnpVisualizer:
     def __init__(self, config: Config, q_model: QuantumModel):
         self.config = config
@@ -22,8 +21,8 @@ class SnpVisualizer:
     def set_data_handler(self, data_handler):
         self.data_handler = data_handler
 
-    @partial(jax.jit, static_argnames=['self'])
-    def _predict_next(self, params, key, x_sequence):
+    @partial(jax.jit, static_argnames=['self', 'learning_mode'])
+    def _predict_next(self, params, key, x_sequence, learning_mode='teacher_forcing'):
         mdl_cfg = self.config.model_cfg
         n_D = mdl_cfg.n_D
         powers = 2 ** jnp.arange(n_D - 1, -1, -1)
@@ -38,21 +37,45 @@ class SnpVisualizer:
             sample_bits = (jnp.floor_divide(measured_int, powers) % 2).astype(jnp.int32)
             return sample_bits, measured_int
 
-        def body_fun(t, carry):
-            h_state, key = carry
-            key, subkey = random.split(key)
-            x_t = x_sequence[t].astype(jnp.float32)
-            sample_bits, measured_int = _sample_from_probs(params, h_state, x_t, 0, subkey)
-            full_state = self.q_model.circuit_for_state(params, h_state, x_t, 0)
-            psi_matrix = jnp.reshape(full_state, (2**mdl_cfg.n_H, 2**mdl_cfg.n_D))
-            h_unnormalized = psi_matrix[:, measured_int]
-            h_norm = jnp.linalg.norm(h_unnormalized)
-            h_next = jnp.where(h_norm > 1e-9, h_unnormalized / h_norm, h_state)
-            return (h_next, subkey)
+        if learning_mode == 'teacher_forcing':
+            def body_fun(t, carry):
+                h_state, key = carry
+                key, subkey = random.split(key)
+                x_t = x_sequence[t].astype(jnp.float32)
+                sample_bits, measured_int = _sample_from_probs(params, h_state, x_t, 0, subkey)
+                full_state = self.q_model.circuit_for_state(params, h_state, x_t, 0)
+                psi_matrix = jnp.reshape(full_state, (2**mdl_cfg.n_H, 2**mdl_cfg.n_D))
+                h_unnormalized = psi_matrix[:, measured_int]
+                h_norm = jnp.linalg.norm(h_unnormalized)
+                h_next = jnp.where(h_norm > 1e-9, h_unnormalized / h_norm, h_state)
+                return (h_next, subkey)
 
-        h_state, key = lax.fori_loop(0, mdl_cfg.seq_len, body_fun, (h_state, key))
-        last_input = x_sequence[-1].astype(jnp.float32)
-        final_sample_bits, _ = _sample_from_probs(params, h_state, last_input, 0, key)
+            h_state, key = lax.fori_loop(0, mdl_cfg.seq_len, body_fun, (h_state, key))
+            last_input = x_sequence[-1].astype(jnp.float32)
+            final_sample_bits, _ = _sample_from_probs(params, h_state, last_input, 0, key)
+
+        else:
+            def ar_body_fun(t, carry):
+                h_state, prev_output, key = carry
+                key, subkey = random.split(key)
+                x_t = lax.cond(
+                    t == 0,
+                    lambda: x_sequence[0].astype(jnp.float32),
+                    lambda: prev_output
+                )
+                sample_bits, measured_int = _sample_from_probs(params, h_state, x_t, 0, subkey)
+                full_state = self.q_model.circuit_for_state(params, h_state, x_t, 0)
+                psi_matrix = jnp.reshape(full_state, (2**mdl_cfg.n_H, 2**mdl_cfg.n_D))
+                h_unnormalized = psi_matrix[:, measured_int]
+                h_norm = jnp.linalg.norm(h_unnormalized)
+                h_next = jnp.where(h_norm > 1e-9, h_unnormalized / h_norm, h_state)
+                return (h_next, sample_bits.astype(jnp.float32), subkey)
+
+            h_state, last_output, key = lax.fori_loop(
+                0, mdl_cfg.seq_len, ar_body_fun, 
+                (h_state, jnp.zeros(n_D, dtype=jnp.float32), key)
+            )
+            final_sample_bits, _ = _sample_from_probs(params, h_state, last_output, 0, key)
 
         return final_sample_bits
 
@@ -68,11 +91,13 @@ class SnpVisualizer:
         num_predictions = len(X_full)
         key, pred_key = random.split(key, 2)
 
+        learning_mode = self.config.exp_cfg.learning_mode
+
         print(f"Predicting rates...")
         pred_keys = random.split(pred_key, num_predictions)
         pred_bits_list = []
         for i in tqdm(range(num_predictions), desc="Prediction"):
-            bits_i = self._predict_next(params, pred_keys[i], X_full[i])
+            bits_i = self._predict_next(params, pred_keys[i], X_full[i], learning_mode)
             pred_bits_list.append(bits_i)
         all_pred_bits = jnp.stack(pred_bits_list, axis=0)
 
@@ -113,22 +138,47 @@ class SnpVisualizer:
             days = range(num_predictions + 1)
             train_days = self.data_handler.train_size
 
-            fig1, ax1 = plt.subplots(1, 1, figsize=(16, 8))
-            fig1.suptitle(f'S&P 500 Prediction - Epoch {epoch}', fontsize=16)
+            fig, axs = plt.subplots(3, 1, figsize=(16, 14))
+            fig.suptitle(f'S&P 500 Prediction Analysis - Epoch {epoch}', fontsize=16)
+
+            ax1 = axs[0]
             ax1.plot(days, actual_values, color='gray', linewidth=2.5, label='Actual')
             ax1.plot(days, pred_pred_values, color='firebrick', linewidth=2, linestyle='-', label='Prediction')
             ax1.axvline(x=train_days, color='r', linestyle=':', linewidth=2, label='Train/Test Split')
-            ax1.set_xlabel('Day'); ax1.set_ylabel('Open Value'); ax1.legend(); ax1.grid(True, alpha=0.5)
+            ax1.set_xlabel('Day')
+            ax1.set_ylabel('Open Value')
+            ax1.set_title('Actual vs Predicted Price')
+            ax1.legend()
+            ax1.grid(True, alpha=0.5)
 
-            textstr = f'Direction Accuracy: {direction_accuracy:.1f}%\nMAPE: {mape:.2f}%'
-            props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-            ax1.text(0.02, 0.98, textstr, transform=ax1.transAxes, fontsize=12,
-                    verticalalignment='top', horizontalalignment='left', bbox=props)
+            ax2 = axs[1]
+            mape_series = [abs(p - a) / abs(a + 1e-9) * 100 for a, p in zip(actual_daily_rates, pred_predicted_rates)]
+            ax2.plot(range(len(mape_series)), mape_series, color='orange', linewidth=2, label='MAPE (%)')
+            ax2.axhline(y=mape, color='red', linestyle='--', linewidth=2, label=f'Average MAPE: {mape:.2f}%')
+            ax2.axvline(x=train_days, color='r', linestyle=':', linewidth=2)
+            ax2.set_xlabel('Day')
+            ax2.set_ylabel('MAPE (%)')
+            ax2.set_title('Mean Absolute Percentage Error Over Time')
+            ax2.legend()
+            ax2.grid(True, alpha=0.5)
+
+            ax3 = axs[2]
+            correct_so_far = [sum([1 for j in range(i+1) if actual_seq_directions[j] == pred_seq_directions[j]]) for i in range(len(actual_seq_directions))]
+            cumulative_acc = [(c / (i+1)) * 100 for i, c in enumerate(correct_so_far)]
+            ax3.plot(range(len(cumulative_acc)), cumulative_acc, color='green', linewidth=2, label='Cumulative Direction Accuracy')
+            ax3.axhline(y=direction_accuracy, color='darkgreen', linestyle='--', linewidth=2, label=f'Final Accuracy: {direction_accuracy:.1f}%')
+            ax3.axvline(x=train_days, color='r', linestyle=':', linewidth=2)
+            ax3.set_xlabel('Day')
+            ax3.set_ylabel('Direction Accuracy (%)')
+            ax3.set_title('Direction Prediction Accuracy (Cumulative)')
+            ax3.legend()
+            ax3.grid(True, alpha=0.5)
 
             plt.tight_layout(rect=[0, 0, 1, 0.96])
             
             img_path = ckpt_manager.plots_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.png"
-            plt.savefig(img_path, dpi=150); plt.close(fig1)
+            plt.savefig(img_path, dpi=150)
+            plt.close(fig)
             print(f"Prediction plot saved to {img_path}")
             print(f"Direction Accuracy: {direction_accuracy:.1f}%, MAPE: {mape:.2f}%")
 
