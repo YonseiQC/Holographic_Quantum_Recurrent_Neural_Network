@@ -24,6 +24,7 @@ class DatasetConfig:
     csv_path: str
     # (Model 1: S&P500)
     total_days: Optional[int] = None
+    map_exponent: Optional[int] = None  # Classify by grouping the 2**n_D normalized values into buckets of size 2**map_exponent
     # (Model 1: S&P500 & Model 2: Power)
     start_year: Optional[int] = None
     start_month: Optional[int] = None
@@ -60,7 +61,7 @@ class SchedulerConfig:
 
 @dataclass
 class LossConfig:
-    mmd_sigma: float = 2.5  # RBF kernel sigma
+    mmd_sigma: float = 2.0  # RBF kernel sigma
     mmd_lambda: float = 0.75  # Weight for class-discrimination term (pure MMD = MMD between real class 0 and 1)
     mmd_k: float = 15.0  # Temperature for smooth-max when combining class-0 and class-1 losses
 
@@ -110,7 +111,7 @@ class ExperimentConfig:
 
 @dataclass
 class SchedulerToggleConfig:
-    use_complex_scheduler: bool = False  # True: complex scheduler; False: cosine annealing without restarts
+    use_complex_scheduler: bool = True  # True: complex scheduler; False: cosine annealing without restarts
 
 
 @dataclass
