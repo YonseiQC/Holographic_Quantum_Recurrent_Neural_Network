@@ -1,4 +1,3 @@
-# hqrnn/visualizer/snp.py
 from functools import partial
 import pandas as pd
 import jax
