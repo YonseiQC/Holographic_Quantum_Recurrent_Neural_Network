@@ -60,7 +60,7 @@ class SnpVisualizer:
                           save_to_disk=True, tag=""):
         if self.data_handler is None:
             print("Error: Data handler not set in Visualizer.")
-            return None, None
+            return
 
         print("Generating predictions...")
         mdl_cfg = self.config.model_cfg
@@ -107,7 +107,8 @@ class SnpVisualizer:
         direction_accuracy = sum([1 for a, p in zip(actual_seq_directions, pred_seq_directions) if a == p]) / len(actual_seq_directions) * 100
 
         actual_daily_rates = [(actual_values[i+1] - actual_values[i]) / actual_values[i] for i in range(num_predictions)]
-        mape = sum([abs(p - a) for a, p in zip(actual_daily_rates, pred_predicted_rates)]) / num_predictions * 100
+        rate_mae = sum([abs(p - a) for a, p in zip(actual_daily_rates, pred_predicted_rates)]) / num_predictions * 100
+        value_mae = sum([abs(p - a) for a, p in zip(actual_values, pred_pred_values)]) / (num_predictions + 1)
 
         if save_to_disk:
             days = range(num_predictions + 1)
@@ -120,7 +121,7 @@ class SnpVisualizer:
             ax1.axvline(x=train_days, color='r', linestyle=':', linewidth=2, label='Train/Test Split')
             ax1.set_xlabel('Day'); ax1.set_ylabel('Open Value'); ax1.legend(); ax1.grid(True, alpha=0.5)
 
-            textstr = f'Direction Accuracy: {direction_accuracy:.1f}%\nMAPE: {mape:.2f}%'
+            textstr = f'Direction Accuracy: {direction_accuracy:.1f}%\nRate_MAE: {rate_mae:.2f}%\nValue_MAE: {value_mae:.1f}'
             props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
             ax1.text(0.02, 0.98, textstr, transform=ax1.transAxes, fontsize=12,
                     verticalalignment='top', horizontalalignment='left', bbox=props)
@@ -130,7 +131,7 @@ class SnpVisualizer:
             img_path = ckpt_manager.plots_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.png"
             plt.savefig(img_path, dpi=150); plt.close(fig1)
             print(f"Prediction plot saved to {img_path}")
-            print(f"Direction Accuracy: {direction_accuracy:.1f}%, MAPE: {mape:.2f}%")
+            print(f"Direction Accuracy: {direction_accuracy:.1f}%, Rate_MAE: {rate_mae:.2f}%, Value_MAE: {value_mae:.1f}")
 
             results_df = pd.DataFrame({
                 'Day': range(num_predictions + 1),
@@ -140,5 +141,4 @@ class SnpVisualizer:
             csv_path = ckpt_manager.csv_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.csv"
             results_df.to_csv(csv_path, index=False)
             print(f"Prediction comparison CSV saved to {csv_path}")
-        
-        return direction_accuracy, mape
+        return direction_accuracy, rate_mae, value_mae
