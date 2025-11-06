@@ -1,4 +1,3 @@
-# hqrnn/trainers/spsa.py
 import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
