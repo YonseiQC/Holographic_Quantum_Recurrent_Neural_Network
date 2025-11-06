@@ -15,8 +15,9 @@ class SnpDataHandler(TimeSeriesDataHandler):
         self.X_test, self.Y_test = None, None
         self.original_values = None
         self.train_size = 0
-        self.dist_map = None  # P(y | context-bin) in training set
-        self.context_bins = None  # Context bin boundaries
+        self.dist_map = None
+        self.context_bins = None
+        self.context_assignments_train = None        
         self._load_and_prep_data()
         self._create_dist_map()
 
@@ -66,21 +67,18 @@ class SnpDataHandler(TimeSeriesDataHandler):
         print(f"Data split into {len(self.X_train)} training and {len(self.X_test)} testing samples.")
 
     def _create_dist_map(self):
-        print("\nCreating distribution map for Model 1...")
         mdl_cfg = self.config.model_cfg
-        ds_cfg = self.config.dataset_cfg
         n_D = mdl_cfg.n_D
-        exp = ds_cfg.map_exponent
         K = 2 ** n_D
         seq_len = mdl_cfg.seq_len
-        num_cases = 2 ** (n_D - exp)  # Number of context bins
-        group_size = 2 ** exp  # Classes per bin
+        num_cases = K
+        group_size = 1
 
         all_bits = jnp.array([[(i >> (n_D - 1 - j)) & 1 for j in range(n_D)] for i in range(K)])  # Lookup table bits
         rate_lookup_table = self._denormalize(all_bits)  # Rate per class
 
         initial_boundaries = [rate_lookup_table[i * group_size] for i in range(num_cases)]
-        initial_boundaries.append(rate_lookup_table[-1])
+        initial_boundaries.append(rate_lookup_table[-1] + (rate_lookup_table[-1] - rate_lookup_table[-2]))
         initial_boundaries = jnp.array(initial_boundaries)
 
         min_rate_repre = initial_boundaries[0]
@@ -89,20 +87,18 @@ class SnpDataHandler(TimeSeriesDataHandler):
         train_indices = jnp.arange(self.train_size)
         start_values = self.original_values[train_indices]
         end_values = self.original_values[train_indices + seq_len]
-        train_contexts = (end_values / start_values) - 1.0 
-
-        clipped_contexts = jnp.clip(train_contexts, min_rate_repre, max_rate_repre)
+        
+        train_contexts = (end_values / start_values) - 1.0  
+        clipped_contexts = jnp.clip(train_contexts, min_rate_repre, max_rate_repre - 1e-9) 
 
         initial_assignments = jnp.digitize(clipped_contexts, initial_boundaries) - 1
         initial_assignments = jnp.clip(initial_assignments, 0, num_cases - 1)
 
         case_counts = np.bincount(initial_assignments, minlength=num_cases)
-
         final_boundaries = list(initial_boundaries)
 
         for i in range(num_cases - 1, -1, -1):
             if case_counts[i] == 0:
-                print(f"Case {i} is empty. Merging its range.")
                 if i == num_cases - 1:
                     final_boundaries.pop(-2)  # Merge with left neighbor
                 elif i == 0:
@@ -115,10 +111,10 @@ class SnpDataHandler(TimeSeriesDataHandler):
                     final_boundaries[i] = mid_point
 
         self.context_bins = jnp.array(final_boundaries)  # Finalized bin edges
-
         final_assignments = jnp.digitize(clipped_contexts, self.context_bins) - 1
         final_assignments = jnp.clip(final_assignments, 0, len(self.context_bins) - 2)
-
+    
+        self.context_assignments_train = final_assignments
         num_final_cases = len(self.context_bins) - 1
         dist_map = {i: jnp.zeros(K, dtype=jnp.float32) for i in range(num_final_cases)}  # P(y | bin=i) counts
         final_case_counts = {i: 0 for i in range(num_final_cases)}
@@ -135,16 +131,14 @@ class SnpDataHandler(TimeSeriesDataHandler):
                 dist_map[i] = jnp.full(K, 1.0 / K)
 
         self.dist_map = jnp.stack([dist_map[i] for i in range(num_final_cases)])
-        print(f"Successfully created map with {num_final_cases} final cases.")
 
     def create_batch(self, key, batch_size):
         num_samples = self.X_train.shape[0]
         indices = random.choice(key, num_samples, (min(batch_size, num_samples),), replace=False)
         X_batch = self.X_train[indices]
         Y_batch = self.Y_train[indices]
-
+        C_batch = self.context_assignments_train[indices]
         Y_expanded = jnp.zeros((len(indices), self.config.model_cfg.seq_len), dtype=jnp.int32)
         Y_expanded = Y_expanded.at[:, -1].set(Y_batch)  # Place label at final step
         L_batch = jnp.zeros(len(indices), dtype=jnp.int32)
-
-        return X_batch, Y_expanded, L_batch
+        return X_batch, Y_expanded, L_batch, C_batch
