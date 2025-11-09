@@ -17,7 +17,7 @@ class SnpDataHandler(TimeSeriesDataHandler):
         self.train_size = 0
         self.dist_map = None
         self.context_bins = None
-        self.context_assignments_train = None        
+        self.context_assignments_train = None
         self._load_and_prep_data()
         self._create_dist_map()
 
@@ -42,24 +42,24 @@ class SnpDataHandler(TimeSeriesDataHandler):
 
         print(f"Data date range being used: {df['Date'].min()} to {df['Date'].max()}")
 
-        self.original_values = df['Open'].values  # Raw price series
-        rates = (self.original_values[1:] - self.original_values[:-1]) / self.original_values[:-1]  # Daily returns
+        self.original_values = df['Open'].values
+        rates = (self.original_values[1:] - self.original_values[:-1]) / self.original_values[:-1]
 
         seq_len = self.config.model_cfg.seq_len
         X, Y = [], []
         for i in range(len(rates) - seq_len):
-            x_seq_rates = rates[i: i + seq_len]  # Context window of returns
-            y_rate = rates[i + seq_len]  # Next-step return as label target
+            x_seq_rates = rates[i: i + seq_len]
+            y_rate = rates[i + seq_len]
 
-            x_seq_bits = jax.vmap(self._normalize)(x_seq_rates)  # Vectorized rate -> bits
-            y_label = self._value_to_int(self._normalize(y_rate))  # Target class id
+            x_seq_bits = jax.vmap(self._normalize)(x_seq_rates)
+            y_label = self._value_to_int(self._normalize(y_rate))
 
             X.append(x_seq_bits)
             Y.append(y_label)
 
         X_full, Y_full = jnp.stack(X), jnp.array(Y)
 
-        self.train_size = int(len(X_full) * 0.8)  # 80/20 split
+        self.train_size = int(len(X_full) * 0.8)
         self.X_train, self.X_test = jnp.split(X_full, [self.train_size])
         self.Y_train, self.Y_test = jnp.split(Y_full, [self.train_size])
 
@@ -74,8 +74,8 @@ class SnpDataHandler(TimeSeriesDataHandler):
         num_cases = K
         group_size = 1
 
-        all_bits = jnp.array([[(i >> (n_D - 1 - j)) & 1 for j in range(n_D)] for i in range(K)])  # Lookup table bits
-        rate_lookup_table = self._denormalize(all_bits)  # Rate per class
+        all_bits = jnp.array([[(i >> (n_D - 1 - j)) & 1 for j in range(n_D)] for i in range(K)])
+        rate_lookup_table = self._denormalize(all_bits)
 
         initial_boundaries = [rate_lookup_table[i * group_size] for i in range(num_cases)]
         initial_boundaries.append(rate_lookup_table[-1] + (rate_lookup_table[-1] - rate_lookup_table[-2]))
@@ -87,9 +87,9 @@ class SnpDataHandler(TimeSeriesDataHandler):
         train_indices = jnp.arange(self.train_size)
         start_values = self.original_values[train_indices]
         end_values = self.original_values[train_indices + seq_len]
-        
-        train_contexts = (end_values / start_values) - 1.0  
-        clipped_contexts = jnp.clip(train_contexts, min_rate_repre, max_rate_repre - 1e-9) 
+
+        train_contexts = (end_values / start_values) - 1.0
+        clipped_contexts = jnp.clip(train_contexts, min_rate_repre, max_rate_repre - 1e-9)
 
         initial_assignments = jnp.digitize(clipped_contexts, initial_boundaries) - 1
         initial_assignments = jnp.clip(initial_assignments, 0, num_cases - 1)
@@ -100,23 +100,23 @@ class SnpDataHandler(TimeSeriesDataHandler):
         for i in range(num_cases - 1, -1, -1):
             if case_counts[i] == 0:
                 if i == num_cases - 1:
-                    final_boundaries.pop(-2)  # Merge with left neighbor
+                    final_boundaries.pop(-2)
                 elif i == 0:
-                    final_boundaries.pop(1)  # Merge with right neighbor
+                    final_boundaries.pop(1)
                 else:
                     lower_b = final_boundaries[i]
                     upper_b = final_boundaries[i + 1]
-                    mid_point = (lower_b + upper_b) / 2.0  # Re-center boundary
+                    mid_point = (lower_b + upper_b) / 2.0
                     final_boundaries.pop(i + 1)
                     final_boundaries[i] = mid_point
 
-        self.context_bins = jnp.array(final_boundaries)  # Finalized bin edges
+        self.context_bins = jnp.array(final_boundaries)
         final_assignments = jnp.digitize(clipped_contexts, self.context_bins) - 1
         final_assignments = jnp.clip(final_assignments, 0, len(self.context_bins) - 2)
-    
+
         self.context_assignments_train = final_assignments
         num_final_cases = len(self.context_bins) - 1
-        dist_map = {i: jnp.zeros(K, dtype=jnp.float32) for i in range(num_final_cases)}  # P(y | bin=i) counts
+        dist_map = {i: jnp.zeros(K, dtype=jnp.float32) for i in range(num_final_cases)}
         final_case_counts = {i: 0 for i in range(num_final_cases)}
 
         for cid, label in zip(final_assignments, self.Y_train):
@@ -139,6 +139,6 @@ class SnpDataHandler(TimeSeriesDataHandler):
         Y_batch = self.Y_train[indices]
         C_batch = self.context_assignments_train[indices]
         Y_expanded = jnp.zeros((len(indices), self.config.model_cfg.seq_len), dtype=jnp.int32)
-        Y_expanded = Y_expanded.at[:, -1].set(Y_batch)  # Place label at final step
+        Y_expanded = Y_expanded.at[:, -1].set(Y_batch)
         L_batch = jnp.zeros(len(indices), dtype=jnp.int32)
         return X_batch, Y_expanded, L_batch, C_batch
