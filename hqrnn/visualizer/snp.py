@@ -127,7 +127,7 @@ class SnpVisualizer:
                     verticalalignment='top', horizontalalignment='left', bbox=props)
 
             plt.tight_layout(rect=[0, 0, 1, 0.96])
-            
+
             img_path = ckpt_manager.plots_dir / f"SnP500_prediction_epoch_{epoch}{'_'+tag if tag else ''}.png"
             plt.savefig(img_path, dpi=150); plt.close(fig1)
             print(f"Prediction plot saved to {img_path}")
