@@ -10,9 +10,8 @@ class QuantumModel:
         self.config = config
         self.wires = list(range(config.model_cfg.n_qubits))
         self.dev = qml.device("default.qubit", wires=self.wires, shots=None)  # Analytic mode for probs
-        self.dev_sampler = qml.device("default.qubit", wires=self.wires, shots=1)  # Sampling mode for bitstrings
 
-
+        
         # ------ QNodes
 
         @qml.qnode(self.dev, interface="jax")
@@ -20,18 +19,12 @@ class QuantumModel:
             self._circuit_content(params, h_state, x_row, label_idx, use_x)
             return qml.probs(wires=range(self.config.model_cfg.n_D))  # Measure data register qubits
 
-        @qml.qnode(self.dev_sampler, interface="jax")
-        def circuit_for_sampling(params, h_state, x_row, label_idx, use_x: bool = True):
-            self._circuit_content(params, h_state, x_row, label_idx, use_x)
-            return qml.sample(wires=self.wires)  # One shot(sampling) over all qubits
-
         @qml.qnode(self.dev, interface="jax")
         def circuit_for_state(params, h_state, x_row, label_idx, use_x: bool = True):
             self._circuit_content(params, h_state, x_row, label_idx, use_x)
             return qml.state()  # Full statevector
 
         self.circuit_for_probs = circuit_for_probs
-        self.circuit_for_sampling = circuit_for_sampling
         self.circuit_for_state = circuit_for_state
 
 
