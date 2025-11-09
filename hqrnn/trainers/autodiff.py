@@ -113,12 +113,21 @@ class Trainer_Autodiff:
         else:
             raise ValueError(f"Unknown learning mode: {learning_mode}")
 
+
     def _nll_loss_fn(self, params, X, Y, L, C, key, learning_mode, collapse_type):
         vmapped_forward = jax.vmap(self._forward_sequence, in_axes=(None, 0, 0, 0, 0, None, None))
         probs_batch_seq, _ = vmapped_forward(params, X, Y, L, random.split(key, X.shape[0]), learning_mode, collapse_type)
 
         batch_indices = jnp.arange(Y.shape[0])
-        if self.config.model in (1, 2):
+
+        if self.config.model == 1:
+            probs_last_step = probs_batch_seq[:, -1, :]
+            context_ids_batch = C
+            target_dists = self.dist_map[context_ids_batch]
+            log_probs = jnp.log(jnp.clip(probs_last_step, 1e-12, 1.0))
+            loss_per_sample = -jnp.sum(target_dists * log_probs, axis=1)
+
+        elif self.config.model == 2:
             probs_last_step = probs_batch_seq[:, -1, :]
             y_last_step = Y[:, -1]
             target_probs = probs_last_step[batch_indices, y_last_step]
@@ -189,7 +198,7 @@ class Trainer_Autodiff:
         sigma = jnp.asarray(loss_cfg.mmd_sigma, dtype=jnp.float32)
         gamma = 1.0 / (2.0 * sigma**2)
         lambda_dist = jnp.asarray(loss_cfg.mmd_lambda, dtype=jnp.float32)
-        
+
         Eb = (probs_batch_seq @ bit_table).reshape(B, T * D)
         y_bits = bit_table[Y].reshape(B, T * D)
 
@@ -255,23 +264,23 @@ class Trainer_Autodiff:
 
             (loss_val, selected_loss), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 params, X, Y, L, C, key, learning_mode, collapse_type
-            )  
-            updates, opt_state = opt_core.update(grads, opt_state, params)  
-            updates_scaled = jtu.tree_map(lambda u: lr * u, updates)  
-            params = optax.apply_updates(params, updates_scaled)  
+            )
+            updates, opt_state = opt_core.update(grads, opt_state, params)
+            updates_scaled = jtu.tree_map(lambda u: lr * u, updates)
+            params = optax.apply_updates(params, updates_scaled)
             return params, opt_state, loss_val, selected_loss
 
-        scheduler = Scheduler(cfg)  
-        mode_controller = ModeController(cfg)  
-        loss_history = LossHistory()  
+        scheduler = Scheduler(cfg)
+        mode_controller = ModeController(cfg)
+        loss_history = LossHistory()
         start_epoch = 0
 
         pbar = tqdm(range(start_epoch, cfg.training_cfg.max_epochs), desc="Training")
         for epoch in pbar:
             key, batch_key, step_key = random.split(key, 3)
-            
+
             Xb, Yb, Lb, Cb = self.data_handler.create_batch(batch_key, cfg.training_cfg.batch_size)
-            
+
             if Xb is None:
                 continue
 
@@ -300,7 +309,7 @@ class Trainer_Autodiff:
 
             if cfg.scheduler_toggle_cfg.use_complex_scheduler:
                 was_fight_mode = mode_controller.state.mode == Mode.FIGHT
-                res = mode_controller.update(float(loss_val), base_lr, epoch) 
+                res = mode_controller.update(float(loss_val), base_lr, epoch)
                 is_fight_mode = mode_controller.state.mode == Mode.FIGHT
 
                 if res.should_save_best:
@@ -313,20 +322,21 @@ class Trainer_Autodiff:
                     key, plot_key = random.split(key)
                     self.ckpt_manager.save_checkpoint(
                         "final",
-                        epoch, 
-                        params, 
-                        opt_state, 
-                        mode_controller.state, 
-                        key, 
+                        epoch,
+                        params,
+                        opt_state,
+                        mode_controller.state,
+                        key,
                         loss_history
-                    )                    
+                    )
+                    """
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
 
                     self.visualizer.visualize_samples(
                         params, plot_key, epoch, self.ckpt_manager,
                         mode_controller.state, save_to_disk=True, tag=f"fight_end_epoch_{epoch}"
                     )
-
+"""
                 if mode_controller.state.mode == Mode.FLEE:
                     key, noise_key = random.split(key)
                     params = self._add_noise(params, noise_key, cfg.mode_cfg.flee_noise_sigma)
@@ -342,47 +352,47 @@ class Trainer_Autodiff:
                 if (epoch + 1) % cfg.training_cfg.plot_every_n_epochs == 0 and epoch > 0:
                     print(f"\n--- Periodic plot at epoch {epoch + 1}. Generating analysis plots... ---")
                     key, plot_key = random.split(key)
-                    
+
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch + 1, mode_controller.state)
-                    
+
                     self.visualizer.visualize_samples(
                         params, plot_key, epoch + 1, self.ckpt_manager,
                         mode_controller.state, save_to_disk=True, tag=f"periodic_epoch_{epoch + 1}"
                     )
-            
+
             postfix = {"Loss": f"{float(loss_val):.4f}", "LR": f"{current_lr:.6f}", "Best": f"{mode_controller.state.best_loss:.4f}"}
             if cfg.scheduler_toggle_cfg.use_complex_scheduler:
                 postfix["Mode"] = mode_controller.state.mode.value.capitalize()[:6]
             pbar.set_postfix(postfix)
 
         print("\nTraining completed.")
-        
+
         if cfg.scheduler_toggle_cfg.use_complex_scheduler:
             print(f"Saving final checkpoint at epoch {epoch}...")
             self.ckpt_manager.save_checkpoint(
                 "final",
-                epoch, 
-                params, 
-                opt_state, 
-                mode_controller.state, 
-                key, 
+                epoch,
+                params,
+                opt_state,
+                mode_controller.state,
+                key,
                 loss_history
             )
         else:
             print(f"Saving 'last' checkpoint at epoch {epoch}...")
             self.ckpt_manager.save_last(
-                epoch, 
-                params, 
-                opt_state, 
-                mode_controller.state, 
-                key, 
+                epoch,
+                params,
+                opt_state,
+                mode_controller.state,
+                key,
                 loss_history
             )
-            
+
             print(f"\n--- Training ended. Generating final analysis plots... ---")
             key, final_plot_key = random.split(key)
             save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
-            
+
             self.visualizer.visualize_samples(
                 params, final_plot_key, epoch, self.ckpt_manager,
                 mode_controller.state, save_to_disk=True, tag=f"training_end_epoch_{epoch}"
