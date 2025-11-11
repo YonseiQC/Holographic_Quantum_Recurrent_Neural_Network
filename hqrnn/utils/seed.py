@@ -1,6 +1,8 @@
 import jax
 from jax import random
 
+# --- 11. Seed Management
+
 _main_key = random.PRNGKey(42)
 
 def set_seed(seed: int):
