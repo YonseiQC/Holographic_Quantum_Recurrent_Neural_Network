@@ -5,13 +5,13 @@ import jax.numpy as jnp
 from jax import random
 from hqrnn.config.base import Config, ModelConfig
 
-# ------ 8-4. Model3 Data Handler
+# --- 8-4. Model3 Data Handler
 
 class DigitDataHandler:
     def __init__(self, config: Config):
         self.config = config
-        self.target_mmd_r0_r1: Optional[float] = None  # Cache for real-vs-real MMD target
-        self.X0, self.Y0, self.X1, self.Y1 = self._load_and_prep_data()  # Split by digit class
+        self.target_mmd_r0_r1: Optional[float] = None
+        self.X0, self.Y0, self.X1, self.Y1 = self._load_and_prep_data()
 
     @staticmethod
     def _bits_to_int(bits_1d: np.ndarray) -> int:
@@ -27,18 +27,18 @@ class DigitDataHandler:
 
         for i in range(n_samples):
             for t in range(1, mdl_cfg.seq_len):
-                X[i, t] = images[i, t - 1]  # Shift image frames by one step
+                X[i, t] = images[i, t - 1]
             for t in range(mdl_cfg.seq_len):
-                Y[i, t] = self._bits_to_int(images[i, t])  # Encode each 7x7 frame to int
+                Y[i, t] = self._bits_to_int(images[i, t])
 
-        mask0 = (labels == d0); mask1 = (labels == d1)  # Select two target digits
+        mask0 = (labels == d0); mask1 = (labels == d1)
         return jnp.array(X[mask0]), jnp.array(Y[mask0]), jnp.array(X[mask1]), jnp.array(Y[mask1])
 
     def _load_and_prep_data(self):
         ds_cfg = self.config.dataset_cfg
         mdl_cfg = self.config.model_cfg
         try:
-            df = pd.read_csv(ds_cfg.csv_path)  # Load flattened 7x7 binary images
+            df = pd.read_csv(ds_cfg.csv_path)
         except Exception as e:
             print(f"Error reading CSV from {ds_cfg.csv_path}: {e}")
             raise
@@ -72,10 +72,11 @@ class DigitDataHandler:
         Xb = jnp.concatenate([self.X0[idx0], self.X1[idx1]], 0)
         Yb = jnp.concatenate([self.Y0[idx0], self.Y1[idx1]], 0)
         Lb = jnp.concatenate([jnp.zeros(len(idx0), jnp.int32), jnp.ones(len(idx1), jnp.int32)], 0)  # Class labels {0,1}
+        Cb = jnp.zeros(len(Lb), dtype=jnp.int32)
 
-        return Xb.astype(jnp.float32), Yb, Lb
+        return Xb.astype(jnp.float32), Yb, Lb, Cb
 
-    def calculate_target_mmd(self, n_samples: int = 1024, sigma: float = 1.5) -> float:  # MMD between real digits
+    def calculate_target_mmd(self, n_samples: int = 1024, sigma: float = 1.5) -> float:
         if self.target_mmd_r0_r1 is not None:
             return self.target_mmd_r0_r1
 
@@ -98,7 +99,7 @@ class DigitDataHandler:
         R0_bits = bit_table[Y0]
         R1_bits = bit_table[Y1]
 
-        R0 = R0_bits.reshape(n0, -1)  # Flatten time axis
+        R0 = R0_bits.reshape(n0, -1)
         R1 = R1_bits.reshape(n1, -1)
 
         gamma = 1.0 / (2.0 * sigma ** 2)
