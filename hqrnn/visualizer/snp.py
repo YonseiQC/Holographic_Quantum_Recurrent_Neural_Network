@@ -11,7 +11,7 @@ from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
 from hqrnn.FFF_mode.types import UnifiedModeState
 
-# ------ 9-1. Model1 Visualizer
+# --- 9-1. Model1 Visualizer
 
 class SnpVisualizer:
     def __init__(self, config: Config, q_model: QuantumModel):
