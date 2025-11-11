@@ -46,9 +46,6 @@ class CheckpointManager:
         self.meta = self._load_meta()
         print(f"CSV outputs will be saved to: {self.csv_dir}")
 
-
-    # ------ meta I/O
-
     def _load_meta(self) -> Dict[str, Any]:
         if self.meta_path.exists():
             try:
@@ -80,7 +77,6 @@ class CheckpointManager:
             uniq.append(e)
         self.meta["checkpoints"] = list(reversed(uniq))
 
-
     def _prune_old_checkpoints(self):
         max_keep = int(self.config.checkpoint_cfg.max_keep_checkpoints)
         if max_keep <= 0:
@@ -95,19 +91,15 @@ class CheckpointManager:
                 p.unlink()
             except Exception:
                 pass
-        
+
         keep_names = {"best.pkl"} | {p.name for p in keep}
         self.meta["checkpoints"] = [e for e in self.meta["checkpoints"] if Path(e["file"]).name in keep_names]
-        # self._save_meta() call is removed from here
 
     def _atomic_pickle_dump(self, path: Path, obj: Dict[str, Any]):
         tmp = path.with_suffix(".tmp")
         with open(tmp, "wb") as f:
             pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
-
-
-    # ------ save/load checkpoints
 
     def save_checkpoint(
         self,
@@ -119,7 +111,8 @@ class CheckpointManager:
         rng_key: Any,
         loss_history: LossHistory = None,
     ):
-        # Manually convert UnifiedModeState to a dictionary to handle deques
+        from dataclasses import fields
+
         mode_state_dict = {
             field.name: getattr(mode_state, field.name)
             for field in fields(mode_state)
@@ -140,7 +133,6 @@ class CheckpointManager:
             "config": self.config.to_dict(),
         }
         if loss_history is not None:
-            # Manually convert LossHistory to a dictionary to handle defaultdict
             loss_history_dict = {
                 "losses": dict(loss_history.losses),
                 "epochs": loss_history.epochs,
@@ -154,8 +146,8 @@ class CheckpointManager:
         print(f"Saved '{tag}' checkpoint at epoch {epoch} -> {path}")
 
         self._register_ckpt(str(path), epoch)
-        self._prune_old_checkpoints()  # Prune first
-        self._save_meta()              # Then, save the final meta state once
+        self._prune_old_checkpoints()
+        self._save_meta()
 
     def save_epoch_checkpoint(self, epoch: int, *args, **kwargs):
         tag = f"e{int(epoch):06d}"
@@ -167,7 +159,6 @@ class CheckpointManager:
     def save_best(self, epoch: int, best_loss: float, *args, **kwargs):
         self.meta["best_epoch"] = int(epoch)
         self.meta["best_loss"] = float(best_loss)
-        # self._save_meta() call removed here. It's now handled by save_checkpoint.
         return self.save_checkpoint("best", epoch, *args, **kwargs)
 
     def load_checkpoint(self, tag: str = "best"):
