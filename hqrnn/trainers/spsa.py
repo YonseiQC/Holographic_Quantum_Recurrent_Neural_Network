@@ -14,6 +14,8 @@ from hqrnn.FFF_mode.types import Mode
 from hqrnn.utils.seed import get_key
 from hqrnn.utils.plotting import save_loss_plot
 
+# --- 13. Trainer - SPSA
+
 class Trainer_SPSA:
     def __init__(self, config: Config, q_model: QuantumModel, data_handler, visualizer, ckpt_manager):
         self.config = config
@@ -28,7 +30,7 @@ class Trainer_SPSA:
             self.dist_map = data_handler.dist_map
             self.context_bins = data_handler.context_bins
 
-    def _bits_to_int(self, bits: jnp.ndarray) -> jnp.int32:
+    def _bits_to_int(self, bits: jnp.ndarray) -> int:
         n_D = self.config.model_cfg.n_D
         pow2 = 2 ** jnp.arange(n_D - 1, -1, -1)
         return jnp.sum(bits * pow2, axis=-1).astype(jnp.int32)
@@ -202,7 +204,7 @@ class Trainer_SPSA:
         if cfg.model == 3:
             self.target_mmd_r0_r1 = float(self.data_handler.calculate_target_mmd(sigma=float(self.loss_cfg.mmd_sigma)))
 
-        scheduler = Scheduler(cfg)
+        scheduler = scheduler(cfg)
         mode_controller = ModeController(cfg)
         loss_history = LossHistory()
         start_epoch = 0
@@ -211,9 +213,9 @@ class Trainer_SPSA:
         pbar = tqdm(range(start_epoch, cfg.training_cfg.max_epochs), desc="Training (SPSA)")
         for epoch in pbar:
             key, batch_key, step_key = random.split(key, 3)
-            
+
             Xb, Yb, Lb, Cb = self.data_handler.create_batch(batch_key, cfg.training_cfg.batch_size)
-            
+
             if Xb is None:
                 continue
 
@@ -252,11 +254,11 @@ class Trainer_SPSA:
                     key, plot_key = random.split(key)
                     self.ckpt_manager.save_checkpoint(
                         "final",
-                        epoch, 
-                        params, 
-                        opt_state, 
-                        mode_controller.state, 
-                        key, 
+                        epoch,
+                        params,
+                        opt_state,
+                        mode_controller.state,
+                        key,
                         loss_history
                     )
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
@@ -281,9 +283,9 @@ class Trainer_SPSA:
                 if (epoch + 1) % cfg.training_cfg.plot_every_n_epochs == 0 and epoch > 0:
                     print(f"\n--- Periodic plot at epoch {epoch + 1}. Generating analysis plots... ---")
                     key, plot_key = random.split(key)
-                    
+
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch + 1, mode_controller.state)
-                    
+
                     self.visualizer.visualize_samples(
                         params, plot_key, epoch + 1, self.ckpt_manager,
                         mode_controller.state, save_to_disk=True, tag=f"periodic_epoch_{epoch + 1}"
@@ -295,33 +297,33 @@ class Trainer_SPSA:
             pbar.set_postfix(postfix)
 
         print("\nTraining completed.")
-        
+
         if cfg.scheduler_toggle_cfg.use_complex_scheduler:
             print(f"Saving final checkpoint at epoch {epoch}...")
             self.ckpt_manager.save_checkpoint(
                 "final",
-                epoch, 
-                params, 
-                opt_state, 
-                mode_controller.state, 
-                key, 
+                epoch,
+                params,
+                opt_state,
+                mode_controller.state,
+                key,
                 loss_history
             )
         else:
             print(f"Saving 'last' checkpoint at epoch {epoch}...")
             self.ckpt_manager.save_last(
-                epoch, 
-                params, 
-                opt_state, 
-                mode_controller.state, 
-                key, 
+                epoch,
+                params,
+                opt_state,
+                mode_controller.state,
+                key,
                 loss_history
             )
-            
+
             print(f"\n--- Training ended. Generating final analysis plots... ---")
             key, final_plot_key = random.split(key)
             save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
-            
+
             self.visualizer.visualize_samples(
                 params, final_plot_key, epoch, self.ckpt_manager,
                 mode_controller.state, save_to_disk=True, tag=f"training_end_epoch_{epoch}"
