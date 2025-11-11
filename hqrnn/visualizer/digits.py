@@ -11,8 +11,6 @@ from hqrnn.quantum.model import QuantumModel
 from hqrnn.utils.checkpoint import CheckpointManager
 from hqrnn.FFF_mode.types import UnifiedModeState
 
-# ------ 9-3. Model3 Visualizer
-
 class DigitVisualizer:
     def __init__(self, config: Config, q_model: QuantumModel):
         self.config = config
@@ -41,34 +39,40 @@ class DigitVisualizer:
         def body_fun(t, state):
             h_state, x_t, key, rows = state
             key, subkey = random.split(key)
-            bits, idx = _sample_from_probs(params, h_state, x_t, label_idx, subkey)  # Collapse data register
-            full_state = self.q_model.circuit_for_state(params, h_state, x_t, label_idx)  # Post-circuit state
-            psi = jnp.reshape(full_state, (2**mdl.n_H, 2**D))  # [H, D]
-            h_unnorm = psi[:, idx]; h_norm = jnp.linalg.norm(h_unnorm)  # Column for measured idx
+            bits, idx = _sample_from_probs(params, h_state, x_t, label_idx, subkey)
+            full_state = self.q_model.circuit_for_state(params, h_state, x_t, label_idx)
+            psi = jnp.reshape(full_state, (2**mdl.n_H, 2**D))
+            h_unnorm = psi[:, idx]; h_norm = jnp.linalg.norm(h_unnorm)
             h_next = jnp.where(h_norm > 1e-9, h_unnorm / h_norm, h_state)
-            return (h_next, bits.astype(jnp.float32), subkey, rows.at[t].set(bits))  # Accumulate rows
+            return (h_next, bits.astype(jnp.float32), subkey, rows.at[t].set(bits))
 
-        init = (h, cur, key, jnp.zeros((T, D), dtype=jnp.int32))  # Accumulator init
-        _, _, _, rows = lax.fori_loop(0, T, body_fun, init)  # Generate T rows of bits
-        return rows  # Shape [T, D]
+        init = (h, cur, key, jnp.zeros((T, D), dtype=jnp.int32))
+        _, _, _, rows = lax.fori_loop(0, T, body_fun, init)
+        return rows
 
     def visualize_samples(self, params, key, epoch, ckpt_manager: CheckpointManager, mode_state: UnifiedModeState,
-                          save_to_disk=False, n_samples_per_digit=3, tag=""):
+                          save_to_disk=False, n_samples_per_digit=5, tag=""):
         ds = self.config.dataset_cfg
         mdl = self.config.model_cfg
         if (mdl.n_D, mdl.n_H, mdl.seq_len) != (7, 7, 7):
             raise ValueError(f"DigitVisualizer supports only (7,7,7), got {(mdl.n_D, mdl.n_H, mdl.seq_len)}")
 
-        fig, axes = plt.subplots(2, n_samples_per_digit, figsize=(3 * n_samples_per_digit, 6))  # 2 rows for two digits
+        fig, axes = plt.subplots(2, n_samples_per_digit, figsize=(3 * n_samples_per_digit, 6))
         if n_samples_per_digit == 1:
             axes = axes.reshape(2, 1)
 
+        csv_data = []
+
         for row, d in enumerate([ds.first_digit, ds.second_digit]):
-            label_idx = 0 if d == ds.first_digit else 1  # Map digit to label embedding index
+            label_idx = 0 if d == ds.first_digit else 1
             for col in range(n_samples_per_digit):
                 key, sub = random.split(key)
-                rows = self._generate_digit(params, sub, label_idx)  # [7, 7] bits
+                rows = self._generate_digit(params, sub, label_idx)
                 img = np.array(rows, dtype=np.int32)
+
+                flat_pixels = img.flatten()
+                csv_row = [d] + flat_pixels.tolist()
+                csv_data.append(csv_row)
 
                 ax = axes[row, col]
                 ax.imshow(img, cmap=ListedColormap(['midnightblue', 'gold']), vmin=0, vmax=1)
@@ -77,9 +81,16 @@ class DigitVisualizer:
 
         fig.suptitle(f'Digit Generation - Epoch {epoch} | Loss: {mode_state.last_loss:.4f}', fontsize=14, y=0.95)
         plt.tight_layout(rect=[0, 0, 1, 0.93])
+
         if save_to_disk:
             path = ckpt_manager.plots_dir / f"digit_samples_epoch_{epoch}{'_' + tag if tag else ''}.png"
             plt.savefig(path, dpi=150, bbox_inches='tight'); plt.close()
             print(f"Digit samples saved to {path}")
+
+            csv_columns = ['label'] + [str(i) for i in range(49)]
+            df = pd.DataFrame(csv_data, columns=csv_columns)
+            csv_path = ckpt_manager.csv_dir / f"Epoch {epoch}_digits{'_' + tag if tag else ''}.csv"
+            df.to_csv(csv_path, index=False)
+            print(f"Digit samples CSV saved to {csv_path}")
         else:
             plt.show()
