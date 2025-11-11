@@ -16,6 +16,8 @@ from hqrnn.FFF_mode.types import Mode
 from hqrnn.utils.seed import get_key
 from hqrnn.utils.plotting import save_loss_plot
 
+# --- 12. Trainer - Autodiff
+
 class Trainer_Autodiff:
     def __init__(self, config: Config, q_model: QuantumModel, data_handler, visualizer, ckpt_manager):
         self.config = config
