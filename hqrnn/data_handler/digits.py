@@ -5,6 +5,13 @@ import jax.numpy as jnp
 from jax import random
 from hqrnn.config.base import Config, ModelConfig
 
+from typing import Optional
+import numpy as np
+import pandas as pd
+import jax.numpy as jnp
+from jax import random
+from hqrnn.config.base import Config, ModelConfig
+
 # --- 8-4. Model3 Data Handler
 
 class DigitDataHandler:
