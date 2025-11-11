@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 from hqrnn.scheduler.loss_history import LossHistory
 from hqrnn.FFF_mode.types import UnifiedModeState
 
+# --- 10. Plotting Utility
+
 def save_loss_plot(plots_dir, config, loss_history: LossHistory, epoch: int, mode_state: UnifiedModeState):
     if not loss_history.epochs:
         return
@@ -28,14 +30,12 @@ def save_loss_plot(plots_dir, config, loss_history: LossHistory, epoch: int, mod
 
     ax.set_title('Loss Over Time'); ax.set_xlabel('Epoch'); ax.set_ylabel('Loss'); ax.grid(True, alpha=0.3)
 
-
     # (0,1) LR curve
     ax = axs[0, 1]
     if len(loss_history.epochs) > 1:
         ax.plot(loss_history.epochs[1:], loss_history.learning_rates[1:], color='orange', linewidth=2)
     elif loss_history.epochs:
         ax.plot(loss_history.epochs, loss_history.learning_rates, color='orange', linewidth=2)
-
 
     # (1,0) Mode timeline
     ax = axs[1, 0]
@@ -63,7 +63,6 @@ def save_loss_plot(plots_dir, config, loss_history: LossHistory, epoch: int, mod
     handles = [plt.Rectangle((0, 0), 1, 1, color=color, alpha=0.7) for color in mode_colors.values()]
     ax.legend(handles, mode_labels.values(), loc='upper right', ncol=len(mode_labels))
     ax.set_xlabel('Epoch'); ax.set_title('Mode Timeline'); ax.set_ylim(0, 1); ax.set_yticks([]); ax.grid(True, alpha=0.3, axis='x')
-
 
     # (1,1) Stats
     ax = axs[1, 1]; ax.axis('off')
