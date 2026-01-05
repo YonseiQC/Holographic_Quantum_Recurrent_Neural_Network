@@ -61,8 +61,8 @@ class SchedulerConfig:
 
 @dataclass
 class LossConfig:
-    mmd_sigma: float = 2.0  # RBF kernel sigma
-    mmd_lambda: float = 0.75  # Weight for class-discrimination term (pure MMD = MMD between real class 0 and 1)
+    mmd_sigma: float = 3.0  # RBF kernel sigma
+    mmd_lambda: float = 0.45  # Weight for class-discrimination term (pure MMD = MMD between real class 0 and 1)
     mmd_k: float = 15.0  # Temperature for smooth-max when combining class-0 and class-1 losses
 
 
