@@ -1,0 +1,251 @@
+# --- 0. Imports
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from statsmodels.tsa.ar_model import AutoReg
+from scipy.stats import pearsonr
+import warnings
+
+sns.set(style="white")
+warnings.filterwarnings("ignore")
+
+
+# --- 1. URLs
+
+OURS_URL = {
+    "snp500":  "https://raw.githubusercontent.com/w-jiwonchoi/HQRNN_dataset/main/snp500_prediction.csv",
+    "bitcoin": "https://raw.githubusercontent.com/w-jiwonchoi/HQRNN_dataset/main/bitcoin_prediction.csv",
+}
+
+HIST_URL = {
+    "snp500":  "https://raw.githubusercontent.com/w-jiwonchoi/HQRNN_dataset/main/model_1_snp.csv",
+    "bitcoin": "https://raw.githubusercontent.com/w-jiwonchoi/HQRNN_dataset/main/model_1_bitcoin.csv",
+}
+
+
+# --- 2. Baseline Builder
+
+def build_baselines(df, seq_len=10):
+    n = len(df)
+    df["MA"] = df["Actual"].rolling(window=seq_len, min_periods=1).mean().shift(1)
+
+    momentum_vals = [np.nan] * n
+    preds_lr      = [np.nan] * n
+    preds_arima_v = [np.nan] * n
+    preds_arima_r = [np.nan] * n
+    returns = df["Actual"].pct_change().fillna(0)
+
+    for t in range(1, n):
+        lookback = min(seq_len, t)
+        base = df["Actual"].iloc[t - lookback]
+        prev = df["Actual"].iloc[t - 1]
+        if base != 0:
+            momentum_vals[t] = prev * (1 + (prev - base) / base)
+
+        window_size = min(seq_len, t)
+        if window_size >= 2:
+            window_y = df["Actual"].iloc[t - window_size:t].values
+            try:
+                lr = LinearRegression().fit(np.arange(window_size).reshape(-1, 1), window_y)
+                preds_lr[t] = lr.predict([[window_size]])[0]
+            except Exception:
+                pass
+
+        train_len = min(100, t)
+        lags = min(seq_len, max(1, t // 3))
+        try:
+            ar_v = AutoReg(df["Actual"].iloc[t - train_len:t].values, lags=lags, old_names=False).fit()
+            preds_arima_v[t] = ar_v.forecast(steps=1)[0]
+            ar_r = AutoReg(returns.iloc[t - train_len:t].values, lags=lags, old_names=False).fit()
+            preds_arima_r[t] = df["Actual"].iloc[t - 1] * (1 + ar_r.forecast(steps=1)[0])
+        except Exception:
+            pass
+
+    df["Momentum"]     = momentum_vals
+    df["LinearReg"]    = preds_lr
+    df["ARIMA(value)"] = preds_arima_v
+    df["ARIMA(rate)"]  = preds_arima_r
+    return df
+
+
+# --- 3. Metrics (Total Return, Sharpe, MDD, RMSE Rate-pct-pt, DA, IC)
+
+def compute_metrics(df_eval, model_name):
+    if model_name not in df_eval.columns:
+        return None
+    df_v = df_eval.dropna(subset=[model_name, "Actual_Rate"]).copy()
+    if len(df_v) < 10:
+        return None
+
+    act_r  = df_v["Actual_Rate"]
+    pred_r = (df_v[model_name] - df_v["Prev_Actual"]) / df_v["Prev_Actual"] * 100
+    pos    = df_v[f"{model_name}_Position"]
+
+    strat_ret = pos * (act_r / 100.0)
+    cum_ret   = (1 + strat_ret).cumprod()
+
+    sharpe = (
+        (strat_ret.mean() * 252) / (strat_ret.std() * np.sqrt(252))
+        if strat_ret.std() != 0 else 0.0
+    )
+    mdd = (cum_ret / cum_ret.cummax() - 1.0).min() * 100
+    rmse_rate = np.sqrt(np.mean((act_r - pred_r) ** 2))
+    da   = (np.sign(act_r) == np.sign(pred_r)).mean() * 100
+    ic   = pearsonr(act_r, pred_r)[0] if np.std(pred_r) > 1e-9 else 0.0
+
+    return {
+        "Model":          model_name,
+        "Return(%)":      (cum_ret.iloc[-1] - 1) * 100,
+        "Sharpe":         sharpe,
+        "MDD(%)":         mdd,
+        "RMSE(Rate%pt)":  rmse_rate,
+        "DA(%)":          da,
+        "IC":             ic,
+    }
+
+
+# --- 4. Plots
+
+def plot_individual_preds(df_eval, models, asset_name, plot_path):
+    for m in models:
+        plt.figure(figsize=(12, 7))
+        plt.plot(df_eval.index, df_eval["Actual"], label="Actual", color="gray", lw=2.5)
+        plt.plot(df_eval.index, df_eval[m], label=f"{m} Predicted", color="firebrick", lw=2.5, alpha=0.8)
+        plt.title(f"{asset_name.upper()} - {m} (Pred vs Actual)", fontsize=24, fontweight="bold")
+        plt.ylabel("Value", fontsize=20)
+        plt.xlabel("Time Step", fontsize=20)
+        plt.xticks(fontsize=16)
+        plt.yticks(fontsize=16)
+        plt.legend(fontsize=18, loc="best")
+        plt.grid(True, alpha=0.4)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_path, f"{asset_name}_{m}_pred_vs_actual.png"), dpi=200)
+        plt.close()
+
+
+def plot_grid_2x4(df_eval, models, asset_name, plot_path):
+    fig, axes = plt.subplots(4, 2, figsize=(12, 17))
+    fig.suptitle(f"{asset_name.upper()} Prediction", fontsize=30, fontweight="bold", y=0.98)
+    axes = axes.flatten()
+    for i, ax in enumerate(axes):
+        if i < len(models):
+            m = models[i]
+            ax.plot(df_eval.index, df_eval["Actual"], label="Actual", color="gray", lw=2)
+            ax.plot(df_eval.index, df_eval[m], label=f"{m} Pred", color="firebrick", lw=2, alpha=0.8)
+            ax.set_title(m, fontsize=22, fontweight="bold")
+            ax.tick_params(axis="both", which="major", labelsize=14)
+            ax.legend(fontsize=14)
+            ax.grid(True, alpha=0.4)
+        else:
+            ax.axis("off")
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(os.path.join(plot_path, f"{asset_name}_2x4_grid_predictions.png"), dpi=300)
+    plt.close()
+
+
+def plot_total_return_comparison(df_eval, models, asset_name, plot_path):
+    plt.figure(figsize=(14, 8))
+    plt.axhline(0, color="black", lw=1, ls="--")
+    x_max = df_eval.index[-1]
+    plt.xlim(df_eval.index[0], x_max + 55)
+    colors = sns.color_palette("tab10", len(models))
+    label_data = []
+
+    for idx, m in enumerate(models):
+        cum_ret = (1 + (df_eval[f"{m}_Position"] * df_eval["Actual_Rate"] / 100.0)).cumprod()
+        ret_val = (cum_ret.iloc[-1] - 1) * 100
+        line, = plt.plot(df_eval.index, (cum_ret - 1) * 100, label=f"{m} Strategy", lw=2.5, color=colors[idx])
+        label_data.append({"y_pos": ret_val, "text": f"{m}: {ret_val:.1f}%", "color": line.get_color()})
+
+    label_data.sort(key=lambda x: x["y_pos"])
+    min_gap = 4.0
+    for i in range(1, len(label_data)):
+        if label_data[i]["y_pos"] - label_data[i - 1]["y_pos"] < min_gap:
+            label_data[i]["y_pos"] = label_data[i - 1]["y_pos"] + min_gap
+
+    for d in label_data:
+        plt.text(x_max + 2, d["y_pos"], d["text"], color=d["color"], fontsize=18, fontweight="bold", va="center")
+
+    plt.title(f"{asset_name.upper()} - Strategy Total Returns Comparison", fontsize=26, fontweight="bold")
+    plt.ylabel("Cumulative Profit (%)", fontsize=20)
+    plt.xlabel("Time Step (t)", fontsize=20)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.legend(fontsize=16, loc="upper left")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_path, f"{asset_name}_total_return_comparison.png"), dpi=300)
+    plt.close()
+
+
+# --- 5. Baseline CSV Saver
+
+def save_baseline_csvs(df_eval, baseline_names, asset_name, baseline_path):
+    for m in baseline_names:
+        if m not in df_eval.columns:
+            continue
+        out = df_eval[["Actual", m]].copy()
+        out.columns = ["Actual_Value", "Predicted_Value"]
+        safe_name = m.replace("(", "").replace(")", "")
+        out.to_csv(os.path.join(baseline_path, f"{safe_name}_{asset_name}.csv"), index=True, index_label="Step")
+
+
+# --- 6. Main
+
+def evaluate_all_models():
+    base_path      = "."
+    plot_path      = os.path.join(base_path, "plots")
+    baseline_path  = os.path.join(base_path, "classical_baseline_predictions")
+    os.makedirs(plot_path,     exist_ok=True)
+    os.makedirs(baseline_path, exist_ok=True)
+
+    for asset in ["snp500", "bitcoin"]:
+        ours_df   = pd.read_csv(OURS_URL[asset]).tail(200)
+        hist_df   = pd.read_csv(HIST_URL[asset])
+
+        val_cols  = [c for c in hist_df.columns if any(k in c.lower() for k in ["actual", "close", "price", "value"])]
+        val_col   = val_cols[0] if val_cols else hist_df.columns[-1]
+        full_hist = hist_df[val_col].values
+
+        base_actuals = ours_df["Actual_Value"].values
+        start_idx = next(
+            (i for i in range(len(full_hist) - 5) if np.allclose(full_hist[i:i+5], base_actuals[:5], atol=1e-3)),
+            -1,
+        )
+
+        prefix = full_hist[max(0, start_idx - 60):start_idx] if start_idx != -1 else np.array([])
+        df_combined = pd.DataFrame({"Actual": np.concatenate([prefix, base_actuals])})
+        df_combined["Ours"] = [np.nan] * (len(df_combined) - 200) + ours_df["Predicted_Value"].tolist()
+
+        df_combined = build_baselines(df_combined)
+        df_combined["Prev_Actual"] = df_combined["Actual"].shift(1)
+        df_combined["Actual_Rate"] = df_combined["Actual"].pct_change() * 100
+
+        baselines = ["MA", "Momentum", "LinearReg", "ARIMA(value)", "ARIMA(rate)"]
+        models    = ["Ours"] + baselines
+
+        for m in models:
+            df_combined[f"{m}_Position"] = np.where(df_combined[m] > df_combined["Prev_Actual"], 1, 0)
+
+        df_eval = df_combined.tail(200).copy()
+        df_eval.index = range(1, 201)
+        df_eval["Prev_Actual"] = df_combined["Actual"].iloc[-201:-1].values
+
+        results = [r for r in [compute_metrics(df_eval, m) for m in models] if r]
+        res_df  = pd.DataFrame(results).set_index("Model")
+        res_df.to_csv(os.path.join(base_path, f"{asset}_valuation_metrics.csv"))
+
+        save_baseline_csvs(df_eval, baselines, asset, baseline_path)
+
+        plot_individual_preds(df_eval, models, asset, plot_path)
+        plot_grid_2x4(df_eval, models, asset, plot_path)
+        plot_total_return_comparison(df_eval, models, asset, plot_path)
+
+
+if __name__ == "__main__":
+    evaluate_all_models()
