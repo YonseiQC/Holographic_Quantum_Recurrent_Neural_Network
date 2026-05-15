@@ -9,8 +9,7 @@ from .base import (
 )
 
 def set_model1_params(config):
-    """Sets the parameters for Model 1: S&P500"""
-    config.model_cfg = ModelConfig(depth=8, n_D=5, n_H=5, seq_len=10)
+    config.model_cfg = ModelConfig(depth=1, n_D=6, n_H=6, seq_len=10)
     config.dataset_cfg = DatasetConfig(
         total_days=200,
         map_exponent=1,
@@ -23,9 +22,9 @@ def set_model1_params(config):
     config.training_cfg = TrainingConfig(
         batch_size=64,
         max_epochs=1000,
-        learning_rate_init=1.0,
-        learning_rate_min=1e-7,
-        plot_every_n_epochs=2000,
+        learning_rate_init=0.01,
+        learning_rate_min=1e-6,
+        plot_every_n_epochs=99999,
     )
     config.scheduler_cfg = SchedulerConfig(
         restart_period_epochs=20,
