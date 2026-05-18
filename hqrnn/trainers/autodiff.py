@@ -31,7 +31,8 @@ class Trainer_Autodiff:
         if self.config.model == 1:
             self.dist_map = data_handler.dist_map
             self.context_bins = data_handler.context_bins
-
+        self.fight_phase_count = 0
+        
     def _bits_to_int(self, bits):
         n_D = self.config.model_cfg.n_D
         powers = 2 ** jnp.arange(n_D - 1, -1, -1)
@@ -321,9 +322,10 @@ class Trainer_Autodiff:
 
                 if was_fight_mode and not is_fight_mode:
                     print(f"\n--- Fight mode ended at epoch {epoch}. Generating analysis plots... ---")
+                    self.fight_phase_count += 1
                     key, plot_key = random.split(key)
                     self.ckpt_manager.save_checkpoint(
-                        "final",
+                        f"fightend{self.fight_phase_count}",
                         epoch,
                         params,
                         opt_state,
@@ -331,14 +333,14 @@ class Trainer_Autodiff:
                         key,
                         loss_history
                     )
-                    """
+
                     save_loss_plot(self.ckpt_manager.plots_dir, self.config, loss_history, epoch, mode_controller.state)
 
                     self.visualizer.visualize_samples(
                         params, plot_key, epoch, self.ckpt_manager,
                         mode_controller.state, save_to_disk=True, tag=f"fight_end_epoch_{epoch}"
                     )
-"""
+
                 if mode_controller.state.mode == Mode.FLEE:
                     key, noise_key = random.split(key)
                     params = self._add_noise(params, noise_key, cfg.mode_cfg.flee_noise_sigma)
